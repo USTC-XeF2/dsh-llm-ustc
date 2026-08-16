@@ -1,0 +1,9 @@
+[workspace]
+members = ["helper"]
+resolver = "2"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+strip = true
+panic = "abort"

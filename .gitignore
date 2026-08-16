@@ -1,0 +1,44 @@
+# Node.js and TypeScript
+/node_modules/
+/.pnpm-store/
+/lib/
+/.client-build/
+/coverage/
+/.nyc_output/
+*.tsbuildinfo
+
+# Rust
+/target/
+/helper/target/
+**/*.rs.bk
+
+# Package and release output
+/dist/
+*.tgz
+*.tar.gz
+*.sha256
+
+# Native helpers are staged by CI. Keep the empty package directories tracked.
+/packages/*/bin/dsh-llm-ustc-helper
+/packages/*/bin/dsh-llm-ustc-helper.exe
+!/packages/*/bin/.gitkeep
+
+# Local runtime and tool output
+*.log
+*.pid
+*.tmp
+npm-debug.log*
+pnpm-debug.log*
+
+# Local environment files
+.env
+.env.*
+!.env.example
+.npmrc.local
+
+# Editors and operating systems
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini

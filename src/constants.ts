@@ -1,0 +1,10 @@
+export const PROVIDER = 'ustc'
+export const PROVIDER_NAME = 'USTC LLM'
+export const SETTINGS_NS = 'llm-ustc'
+export const API_KEY_REF = 'USTC_LLM_API_KEY'
+export const IWAN_CONFIG_REF = 'USTC_LLM_IWAN_CONFIG'
+export const DEFAULT_MODEL = 'deepseek-v4-flash-ascend'
+export const DEFAULT_CONTEXT_WINDOW = 262_144
+export const DEFAULT_MAX_TOKENS = 32_768
+export const HELPER_PROTOCOL = 'v1'
+export const SETTINGS_ROUTE = '/_dsh/llm-ustc/settings'

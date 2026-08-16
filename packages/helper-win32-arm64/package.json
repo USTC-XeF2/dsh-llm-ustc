@@ -1,0 +1,14 @@
+{
+  "name": "@dsh-llm-ustc/helper-win32-arm64",
+  "version": "0.1.0",
+  "description": "Windows ARM64 native helper for dsh-llm-ustc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/USTC-XeF2/dsh-llm-ustc.git",
+    "directory": "packages/helper-win32-arm64"
+  },
+  "os": ["win32"],
+  "cpu": ["arm64"],
+  "files": ["bin/dsh-llm-ustc-helper.exe"],
+  "license": "MIT"
+}

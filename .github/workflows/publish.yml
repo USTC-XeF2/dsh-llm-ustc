@@ -1,0 +1,145 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      dist_tag: ${{ steps.release.outputs.dist_tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: pnpm install --frozen-lockfile
+      - id: release
+        run: |
+          version=$(node -p "require('./package.json').version")
+          test "$GITHUB_REF_NAME" = "v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+      - run: pnpm test:ts
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  native:
+    needs: validate
+    name: package native (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            package: helper-win32-x64
+            binary: target/x86_64-pc-windows-msvc/release/dsh-llm-ustc-helper.exe
+          - name: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            package: helper-win32-arm64
+            binary: target/aarch64-pc-windows-msvc/release/dsh-llm-ustc-helper.exe
+          - name: macos-x64
+            runner: macos-26-intel
+            target: x86_64-apple-darwin
+            package: helper-darwin-x64
+            binary: target/x86_64-apple-darwin/release/dsh-llm-ustc-helper
+          - name: macos-arm64
+            runner: macos-26
+            target: aarch64-apple-darwin
+            package: helper-darwin-arm64
+            binary: target/aarch64-apple-darwin/release/dsh-llm-ustc-helper
+          - name: linux-x64-musl
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            package: helper-linux-x64
+            binary: target/x86_64-unknown-linux-musl/release/dsh-llm-ustc-helper
+          - name: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            package: helper-linux-arm64
+            binary: target/aarch64-unknown-linux-musl/release/dsh-llm-ustc-helper
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - if: startsWith(matrix.name, 'linux-')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: node scripts/stage-native.mjs "${{ matrix.binary }}" "packages/${{ matrix.package }}"
+      - run: >-
+          node -e "require('node:fs').mkdirSync('release-artifacts', { recursive: true })"
+      - run: npm pack "packages/${{ matrix.package }}" --pack-destination release-artifacts
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.package }}
+          path: release-artifacts/*.tgz
+          if-no-files-found: error
+
+  publish:
+    needs: [validate, native]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      DIST_TAG: ${{ needs.validate.outputs.dist_tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: helper-*
+          path: release-artifacts
+          merge-multiple: true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm pack --pack-destination release-artifacts
+      - name: Publish native packages, then main package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for platform in win32-x64 win32-arm64 darwin-x64 darwin-arm64 linux-x64 linux-arm64; do
+            npm publish "release-artifacts/dsh-llm-ustc-helper-$platform-$VERSION.tgz" --access public --tag "$DIST_TAG"
+          done
+          npm publish "release-artifacts/dsh-llm-ustc-$VERSION.tgz" --access public --tag "$DIST_TAG"

@@ -1,0 +1,15 @@
+{
+  "name": "@dsh-llm-ustc/helper-linux-arm64",
+  "version": "0.1.0",
+  "description": "Linux ARM64 musl helper for dsh-llm-ustc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/USTC-XeF2/dsh-llm-ustc.git",
+    "directory": "packages/helper-linux-arm64"
+  },
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "libc": ["musl", "glibc"],
+  "files": ["bin/dsh-llm-ustc-helper"],
+  "license": "MIT"
+}

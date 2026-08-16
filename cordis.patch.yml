@@ -1,0 +1,4 @@
+# Mount the USTC LLM provider into the selected DSH profile.
+- insert:
+    - id: llm-ustc
+      name: dsh-llm-ustc
