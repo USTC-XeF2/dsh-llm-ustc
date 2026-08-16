@@ -104,7 +104,7 @@ jobs:
       - run: node scripts/stage-native.mjs "${{ matrix.binary }}" "packages/${{ matrix.package }}"
       - run: >-
           node -e "require('node:fs').mkdirSync('release-artifacts', { recursive: true })"
-      - run: npm pack "packages/${{ matrix.package }}" --pack-destination release-artifacts
+      - run: npm pack "./packages/${{ matrix.package }}" --pack-destination release-artifacts
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.package }}
@@ -140,6 +140,6 @@ jobs:
         run: |
           set -euo pipefail
           for platform in win32-x64 win32-arm64 darwin-x64 darwin-arm64 linux-x64 linux-arm64; do
-            npm publish "release-artifacts/dsh-llm-ustc-helper-$platform-$VERSION.tgz" --access public --tag "$DIST_TAG"
+            npm publish "./release-artifacts/dsh-llm-ustc-helper-$platform-$VERSION.tgz" --access public --tag "$DIST_TAG"
           done
-          npm publish "release-artifacts/dsh-llm-ustc-$VERSION.tgz" --access public --tag "$DIST_TAG"
+          npm publish "./release-artifacts/dsh-llm-ustc-$VERSION.tgz" --access public --tag "$DIST_TAG"
