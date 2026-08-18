@@ -114,6 +114,9 @@ jobs:
   publish:
     needs: [validate, native]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       DIST_TAG: ${{ needs.validate.outputs.dist_tag }}
@@ -135,11 +138,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm pack --pack-destination release-artifacts
       - name: Publish native packages, then main package
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           for platform in win32-x64 win32-arm64 darwin-x64 darwin-arm64 linux-x64 linux-arm64; do
-            npm publish "./release-artifacts/dsh-llm-ustc-helper-$platform-$VERSION.tgz" --access public --tag "$DIST_TAG"
+            npm publish "./release-artifacts/dsh-llm-ustc-helper-$platform-$VERSION.tgz" --access public --tag "$DIST_TAG" --provenance
           done
-          npm publish "./release-artifacts/dsh-llm-ustc-$VERSION.tgz" --access public --tag "$DIST_TAG"
+          npm publish "./release-artifacts/dsh-llm-ustc-$VERSION.tgz" --access public --tag "$DIST_TAG" --provenance
