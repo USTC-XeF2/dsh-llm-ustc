@@ -1,21 +1,13 @@
 mod config;
 mod iwan;
-mod oidc;
 mod server;
 mod tunnel;
 
 use anyhow::{Context, Result};
 use config::StartupConfig;
-use serde::Serialize;
+use serde_json::json;
 use std::io::{BufRead, Write};
 use tokio::sync::oneshot;
-
-#[derive(Serialize)]
-struct Handshake {
-    protocol: &'static str,
-    port: u16,
-    pid: u32,
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,16 +17,9 @@ async fn main() -> Result<()> {
         .await
         .context("bind loopback helper")?;
     let port = listener.local_addr()?.port();
-    println!(
-        "{}",
-        serde_json::to_string(&Handshake {
-            protocol: "v1",
-            port,
-            pid: std::process::id()
-        })?
-    );
+    println!("{}", json!({ "protocol": "v2", "port": port }));
     std::io::stdout().flush().ok();
-    server::start_reprobe(state.clone());
+    server::start_direct_recovery(state.clone());
     let shutdown = async move {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {},

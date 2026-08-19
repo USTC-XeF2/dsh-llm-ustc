@@ -1,13 +1,11 @@
-use crate::config::{IwanConfig, IwanServer};
-use crate::iwan::{auth, crypto, gcm, socks};
+use crate::config::TunnelConfig;
+use crate::iwan::{auth, crypto, socks};
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
-
-const APP_SECRET: &str = "ca6a3532abd2986a03b86b3a";
 
 pub(crate) struct TunnelHandle {
     pub address: SocketAddr,
@@ -19,8 +17,10 @@ impl TunnelHandle {
     pub(crate) fn is_finished(&self) -> bool {
         self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
+}
 
-    pub(crate) fn stop(&mut self) {
+impl Drop for TunnelHandle {
+    fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -28,21 +28,8 @@ impl TunnelHandle {
     }
 }
 
-impl Drop for TunnelHandle {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-pub(crate) fn start(config: &IwanConfig, selected_id: &str) -> Result<TunnelHandle> {
-    config.validate()?;
-    let server = config
-        .servers
-        .iter()
-        .find(|server| server.id == selected_id)
-        .with_context(|| format!("selected iWAN line {selected_id:?} is unavailable"))?
-        .clone();
-    let domain = config.domain.clone();
+pub(crate) fn start(config: &TunnelConfig) -> Result<TunnelHandle> {
+    let config = config.clone();
     let running = Arc::new(AtomicBool::new(true));
     let worker_running = running.clone();
     let (ready_tx, ready_rx) = mpsc::channel();
@@ -50,7 +37,7 @@ pub(crate) fn start(config: &IwanConfig, selected_id: &str) -> Result<TunnelHand
     let thread = std::thread::Builder::new()
         .name("dsh-ustc-iwan".into())
         .spawn(move || {
-            let result = run_line(&domain, &server, worker_running, ready_tx);
+            let result = run_line(&config, worker_running, ready_tx);
             if let Err(error) = &result {
                 eprintln!("iWAN data path stopped: {error:#}");
             }
@@ -79,26 +66,28 @@ pub(crate) fn start(config: &IwanConfig, selected_id: &str) -> Result<TunnelHand
 }
 
 fn run_line(
-    domain: &str,
-    server: &IwanServer,
+    config: &TunnelConfig,
     running: Arc<AtomicBool>,
     ready: mpsc::Sender<SocketAddr>,
 ) -> Result<()> {
-    let password = gcm::decrypt_password(&server.pass_word, APP_SECRET, domain, &server.username);
-    if password.is_empty() {
-        anyhow::bail!("selected iWAN line credential could not be decrypted");
-    }
-    let encrypted_password = auth::get_ct(&server.username, &password, &None);
-    let nonce = auth::rand_u32()?;
-    let open = auth::build_open(&server.username, &encrypted_password, 1380, 1, nonce);
-    let socket = auth::udp_connect(&server.host, server.port, 1500)?;
+    let encrypted_password = crypto::encrypt_password(&config.password, &config.username);
+    let nonce = rand::random();
+    let open = auth::build_open(&config.username, &encrypted_password, 1380, 1, nonce);
+    let address: SocketAddr = format!("{}:{}", config.host, config.port)
+        .parse()
+        .context("invalid iWAN server address")?;
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").context("bind iWAN UDP socket")?;
+    socket.connect(address).context("connect iWAN UDP socket")?;
+    socket
+        .set_read_timeout(Some(Duration::from_millis(1_500)))
+        .ok();
     let authenticated = authenticate(&socket, &open, nonce, &running)?;
     let inner_ip = authenticated
         .tun
         .parse()
         .context("invalid tunnel IPv4 address")?;
     let gateway = authenticated.gw.parse().context("invalid tunnel gateway")?;
-    let session_key = crypto::session_key(&server.username, &password);
+    let session_key = crypto::session_key(&config.username, &config.password);
     socks::run(
         &socket,
         socks::SocksConfig {

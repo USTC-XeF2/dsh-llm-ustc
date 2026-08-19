@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { describe, expect, it, vi } from 'vitest'
 import { UstcAdapter } from '../src/adapter.ts'
 import { DEFAULT_MODEL } from '../src/constants.ts'
+import type { HelperManager } from '../src/helper.ts'
+import { ModelCatalog } from '../src/model-catalog.ts'
 import { normalizeModels } from '../src/state.ts'
+import type { StateStore } from '../src/state.ts'
 
 describe('model catalog', () => {
   it('keeps server ids, removes duplicates and Claude placeholders, and prefers the documented default', () => {
@@ -18,6 +22,30 @@ describe('model catalog', () => {
       { id: 'a-model', name: 'A' },
       { id: 'z-model', name: 'Z' },
     ])
+  })
+
+  it('refreshes in TypeScript after the helper reports direct recovery', async () => {
+    let recover = async (): Promise<void> => { throw new Error('recovery handler was not registered') }
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [{ id: DEFAULT_MODEL, name: DEFAULT_MODEL }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const setModels = vi.fn().mockResolvedValue(undefined)
+    const helper = {
+      onDirectRecovered: (handler: () => Promise<void>) => { recover = handler },
+      fetch,
+    } as unknown as HelperManager
+    const ctx = {
+      credentials: { resolve: vi.fn().mockResolvedValue({ value: 'host-owned-key' }) },
+    } as unknown as Context
+    const store = { setModels, models: () => [] } as unknown as StateStore
+    new ModelCatalog(ctx, helper, store)
+
+    await recover()
+
+    expect(fetch).toHaveBeenCalledWith('/v1/models', expect.objectContaining({
+      headers: expect.objectContaining({ authorization: 'Bearer host-owned-key' }),
+    }))
+    expect(setModels).toHaveBeenCalledWith([{ id: DEFAULT_MODEL, name: DEFAULT_MODEL }])
   })
 })
 

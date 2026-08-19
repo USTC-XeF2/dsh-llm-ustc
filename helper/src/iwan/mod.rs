@@ -2,7 +2,6 @@
 #[allow(dead_code)]
 pub(crate) mod auth;
 pub(crate) mod crypto;
-pub(crate) mod gcm;
 pub(crate) mod netstack;
 #[allow(dead_code)]
 pub(crate) mod protocol;

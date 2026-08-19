@@ -6,7 +6,7 @@ DeepSeek Harness `ustc` LLM Provider，访问中国科学技术大学
 
 ## 要求
 
-- DeepSeek Harness `0.1.0-rc.6`
+- DeepSeek Harness `0.1.0-rc.7`
 - Node.js 24（也支持 Node.js `^22.19.0`）
 - Windows、macOS 或 Linux，x64/ARM64
 - 科大 LLM API Key
@@ -23,7 +23,7 @@ dsh plugin --profile web add dsh-llm-ustc@latest
 如需固定版本，可以将 `latest` 换成具体版本号：
 
 ```sh
-dsh plugin --profile web add dsh-llm-ustc@0.1.0
+dsh plugin --profile web add dsh-llm-ustc@0.2.0
 ```
 
 安装时 npm 会通过六个 `optionalDependencies` 之一自动选择当前操作系统和架构的
@@ -41,10 +41,12 @@ DSH Web 进程。
 ## 网络边界
 
 - helper 只监听随机 `127.0.0.1` 端口，并要求每次启动生成的会话令牌。
-- 数据面只接受 `GET /v1/models` 和 `POST /v1/chat/completions`。
-- 上游固定为 `api.llm.ustc.edu.cn:443`，Host 和 TLS SNI 不可配置。
-- 拒绝绝对 URL、`CONNECT`、任意路径、任意 Host 和 SOCKS IP 目标。
-- helper 和 OIDC/控制面客户端忽略 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 与
+- 数据面允许访问固定上游 Host 下的任意相对路径、查询参数和 HTTP 方法。
+- 上游固定为 `api.llm.ustc.edu.cn:443`，Host 和 TLS SNI 不可配置；拒绝绝对
+  URL、`CONNECT`/authority-form、非 loopback 本地 Host 和 SOCKS IP 目标。
+- OIDC、控制面签名和线路目录由 Host 侧 TypeScript 处理；helper 只接收当前线路的
+  IP、端口、账号和临时解密后的密码，并负责 iWAN 数据面。
+- helper 和 Host 侧 OIDC/控制面客户端忽略 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 与
   `NO_PROXY`；插件不会修改进程外的环境变量。
 - 不创建 TUN 设备，不修改系统 DNS、代理、路由表或其他 DSH Provider 的网络流量。
 - `401/403/429/5xx` 是合法 HTTP 响应，不触发 iWAN 切换。

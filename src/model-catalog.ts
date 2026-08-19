@@ -11,7 +11,7 @@ export class ModelCatalog {
     private readonly helper: HelperManager,
     private readonly store: StateStore,
   ) {
-    this.helper.onRecoveredModels(async models => { await this.accept(models) })
+    this.helper.onDirectRecovered(async () => { await this.refresh() })
   }
 
   models(): CachedModel[] {

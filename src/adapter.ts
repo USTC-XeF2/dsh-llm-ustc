@@ -25,11 +25,7 @@ import {
 import type { HelperManager } from './helper.ts'
 import type { ModelCatalog } from './model-catalog.ts'
 
-const RETRY_POLICY = resolveRetryPolicy({
-  mode: 'normal',
-  maxRetries: 0,
-  retryableCodes: ['STREAM_CLOSED'],
-}, 'llm-ustc.retryPolicy')
+const RETRY_POLICY = resolveRetryPolicy(undefined, 'llm-ustc.retryPolicy')
 
 const USTC_REASONING_EFFORTS = [
   { id: ReasoningEffortId('off'), name: 'Off' },

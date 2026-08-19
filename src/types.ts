@@ -18,6 +18,13 @@ export interface PublicServer {
   endpoint: string
 }
 
+export interface TunnelCredential {
+  host: string
+  port: number
+  username: string
+  password: string
+}
+
 export interface CachedModel {
   id: string
   name: string
@@ -26,13 +33,4 @@ export interface CachedModel {
 export interface PluginState {
   models: CachedModel[]
   modelsUpdatedAt?: string
-}
-
-export interface HelperStatus {
-  protocol: 'v1'
-  target: 'api.llm.ustc.edu.cn:443'
-  route: 'direct' | 'iwan'
-  iwanConfigured: boolean
-  selectedServerId?: string
-  tunnelRunning: boolean
 }

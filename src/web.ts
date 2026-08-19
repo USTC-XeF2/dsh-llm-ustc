@@ -6,15 +6,16 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { API_KEY_REF, IWAN_CONFIG_REF, SETTINGS_NS, SETTINGS_ROUTE } from './constants.ts'
 import type { Config } from './config.ts'
 import type { HelperManager } from './helper.ts'
+import { parseIwanConfig, publicIwanServers } from './iwan.ts'
 import type { ModelCatalog } from './model-catalog.ts'
+import { IwanAuthenticator } from './oidc.ts'
 import type { StateStore } from './state.ts'
-import type { HelperStatus, IwanConfig, PublicServer } from './types.ts'
+import type { PublicServer } from './types.ts'
 
 export interface SettingsSnapshot {
   writable: boolean
   revision: number
   selectedServerId?: string
-  directReprobeSeconds: number
   apiKey: { configured: boolean; source?: string; writable: boolean }
   iwan: {
     configured: boolean
@@ -22,7 +23,7 @@ export interface SettingsSnapshot {
     writable: boolean
     servers: PublicServer[]
   }
-  helper?: HelperStatus
+  usingIwan: boolean
   models: { id: string; name: string }[]
   modelsUpdatedAt?: string
 }
@@ -43,30 +44,29 @@ export class UstcWebBackend {
     private readonly helper: HelperManager,
     private readonly catalog: ModelCatalog,
     private readonly store: StateStore,
+    private readonly iwanAuth: IwanAuthenticator = new IwanAuthenticator(),
   ) {}
 
   async snapshot(): Promise<SettingsSnapshot> {
     const descriptor = this.ctx.settings.describe({ redactSecrets: true }).find(row => row.ns === SETTINGS_NS)
     if (descriptor === undefined) throw new Error('llm-ustc settings namespace is not registered')
     const value = descriptor.value as Config
-    const [apiKey, iwan, iwanSecret, helper] = await Promise.all([
+    const [apiKey, iwan, iwanSecret] = await Promise.all([
       this.ctx.credentials.describe(credentialRef(API_KEY_REF)),
       this.ctx.credentials.describe(credentialRef(IWAN_CONFIG_REF)),
       this.ctx.credentials.resolve(credentialRef(IWAN_CONFIG_REF)),
-      this.helper.statusIfRunning(),
     ])
     const state = this.store.snapshot()
     return {
       writable: this.ctx.settings.writable,
       revision: descriptor.revision,
       ...(value.selectedServerId === undefined ? {} : { selectedServerId: value.selectedServerId }),
-      directReprobeSeconds: value.directReprobeSeconds ?? 300,
       apiKey: publicCredential(apiKey),
       iwan: {
         ...publicCredential(iwan),
         servers: publicIwanServers(iwanSecret?.value),
       },
-      ...(helper === undefined ? {} : { helper }),
+      usingIwan: this.helper.route,
       models: state.models,
       ...(state.modelsUpdatedAt === undefined ? {} : { modelsUpdatedAt: state.modelsUpdatedAt }),
     }
@@ -86,24 +86,27 @@ export class UstcWebBackend {
         await this.helper.stop()
         return this.snapshot()
       case 'beginOidc':
-        return this.helper.beginOidc()
+        return this.iwanAuth.begin()
       case 'completeOidc': {
-        const result = await this.helper.completeOidc(request.callbackUrl)
-        return { servers: result.servers, snapshot: await this.snapshot() }
+        const config = await this.iwanAuth.complete(request.callbackUrl)
+        await this.ctx.credentials.set(credentialRef(IWAN_CONFIG_REF), JSON.stringify(config))
+        await this.helper.stop()
+        return { servers: publicIwanServers(JSON.stringify(config)), snapshot: await this.snapshot() }
       }
       case 'logoutIwan':
         await this.ctx.settings.mutate(settingsNamespace(SETTINGS_NS), [{ op: 'unset', path: ['selectedServerId'] }], request.expectedRevision)
         await this.ctx.credentials.unset(credentialRef(IWAN_CONFIG_REF))
         await this.helper.stop()
-        await this.helper.status()
         return this.snapshot()
       case 'refreshRoute': {
-        const key = await this.ctx.credentials.resolve(credentialRef(API_KEY_REF))
-        await this.helper.refreshRoute(key?.value.trim())
+        await this.helper.refreshRoute()
         return this.snapshot()
       }
       case 'selectServer': {
-        const key = await this.ctx.credentials.resolve(credentialRef(API_KEY_REF))
+        const iwan = await this.ctx.credentials.resolve(credentialRef(IWAN_CONFIG_REF))
+        if (iwan === undefined || !parseIwanConfig(iwan.value).servers.some(server => server.id === request.serverId)) {
+          throw new TypeError('selected iWAN line is unavailable')
+        }
         const rollback = this.helper.stageSelectedServer(request.serverId)
         try {
           await this.ctx.settings.update(settingsNamespace(SETTINGS_NS), { selectedServerId: request.serverId }, request.expectedRevision)
@@ -111,7 +114,7 @@ export class UstcWebBackend {
           rollback()
           throw error
         }
-        await this.helper.selectServer(request.serverId, key?.value.trim())
+        await this.helper.refreshRoute()
         return this.snapshot()
       }
       case 'syncModels':
@@ -145,20 +148,6 @@ export function installWeb(ctx: Context, backend: UstcWebBackend): void {
 
 function publicCredential(info: { configured: boolean; source?: string; writable: boolean }): { configured: boolean; source?: string; writable: boolean } {
   return { configured: info.configured, ...(info.source === undefined ? {} : { source: info.source }), writable: info.writable }
-}
-
-export function publicIwanServers(raw: string | undefined): PublicServer[] {
-  if (raw === undefined) return []
-  try {
-    const value = JSON.parse(raw) as IwanConfig
-    if (!Array.isArray(value.servers)) return []
-    return value.servers.flatMap(server => {
-      if (typeof server.id !== 'string' || typeof server.name !== 'string' || typeof server.host !== 'string' || !Number.isSafeInteger(server.port)) return []
-      return [{ id: server.id, name: server.name, endpoint: `${server.host}:${server.port}` }]
-    })
-  } catch {
-    return []
-  }
 }
 
 function responseJson(res: ServerResponse, status: number, body: unknown): void {

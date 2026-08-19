@@ -1,13 +1,11 @@
 use super::{crypto, protocol};
-use anyhow::{Context, Result};
-use std::time::Duration;
+use anyhow::Result;
 
 pub struct AuthResult {
     pub sid: u16,
     pub tok: u32,
     pub tun: String,
     pub gw: String,
-    pub dns: String,
     pub mtu: u16,
 }
 
@@ -46,13 +44,11 @@ pub fn parse_ack(buf: &[u8], expect_nonce: u32) -> Result<AuthResult> {
 
     let mut tun = String::new();
     let mut gw = String::new();
-    let mut dns = String::new();
     let mut mtu: u16 = 1400;
     for (tt, v) in protocol::parse_tlvs(&buf[24..]) {
         match tt {
             protocol::T_IP => tun = protocol::ip_to_string(&v),
             protocol::T_GATEWAY => gw = protocol::ip_to_string(&v),
-            protocol::T_DNS => dns = protocol::ip_to_string(&v),
             protocol::T_MTU if v.len() >= 2 => mtu = u16::from_be_bytes([v[0], v[1]]),
             protocol::T_AUTH_VERIFY => {
                 if v.len() != 4 {
@@ -71,39 +67,6 @@ pub fn parse_ack(buf: &[u8], expect_nonce: u32) -> Result<AuthResult> {
         tok,
         tun,
         gw,
-        dns,
         mtu,
     })
-}
-
-pub fn udp_connect(host: &str, port: u16, timeout_ms: u64) -> Result<std::net::UdpSocket> {
-    let a: std::net::SocketAddr = format!("{host}:{port}")
-        .parse()
-        .context("invalid address")?;
-    let s = std::net::UdpSocket::bind("0.0.0.0:0").context("bind UDP")?;
-    s.connect(a).context("connect UDP")?;
-    s.set_read_timeout(Some(Duration::from_millis(timeout_ms)))
-        .ok();
-    Ok(s)
-}
-
-pub fn rand_u32() -> Result<u32> {
-    Ok(rand::random())
-}
-
-pub fn get_ct(user: &str, pass: &str, ct_pass_hex: &Option<String>) -> [u8; 16] {
-    if let Some(h) = &ct_pass_hex {
-        let h = h.trim_start_matches("0x");
-        let b: Vec<u8> = (0..h.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
-            .collect();
-        let mut o = [0u8; 16];
-        if b.len() >= 16 {
-            o.copy_from_slice(&b[..16]);
-        }
-        o
-    } else {
-        crypto::encrypt_password(pass, user)
-    }
 }

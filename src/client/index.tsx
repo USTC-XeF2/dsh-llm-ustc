@@ -104,20 +104,10 @@ interface PublicServer {
   endpoint: string
 }
 
-interface HelperStatus {
-  protocol: 'v1'
-  target: 'api.llm.ustc.edu.cn:443'
-  route: 'direct' | 'iwan'
-  iwanConfigured: boolean
-  selectedServerId?: string
-  tunnelRunning: boolean
-}
-
 interface SettingsSnapshot {
   writable: boolean
   revision: number
   selectedServerId?: string
-  directReprobeSeconds: number
   apiKey: { configured: boolean; source?: string; writable: boolean }
   iwan: {
     configured: boolean
@@ -125,7 +115,7 @@ interface SettingsSnapshot {
     writable: boolean
     servers: PublicServer[]
   }
-  helper?: HelperStatus
+  usingIwan: boolean
   models: { id: string; name: string }[]
   modelsUpdatedAt?: string
 }
@@ -286,7 +276,7 @@ function LoadedSettings({ controller, t, state }: Injected & { state: ViewState 
     <div className="ulu-status-row">
       <span>{t('route')}</span>
       <span className="ulu-route-value">
-        <strong>{snapshot.helper?.route === 'iwan' ? t('iwanRoute') : t('directRoute')}</strong>
+        <strong>{snapshot.usingIwan ? t('iwanRoute') : t('directRoute')}</strong>
         <Tooltip label={t('refreshRoute')} side="top">
           <span className="ulu-route-refresh">
             <Button type="button" variant="toolbar" size="sm" icon={<IconRefreshOutline14 className={state.action === 'refreshRoute' ? 'ulu-spin' : undefined} />} aria-label={t('refreshRoute')} disabled={busy} onClick={() => { void controller.mutateSnapshot('refreshRoute') }} />
@@ -374,8 +364,7 @@ export function apply(ctx: ClientContext): void {
   }, 'dsh-llm-ustc: settings invalidations')
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
     name: 'settings.plugin.item',
-    id: 'llm-ustc',
-    order: 25,
+    key: LOCALE_NS,
     inject: () => ({ controller, t }),
   }, IwanSettingsItem))
 }

@@ -1,17 +1,14 @@
-use crate::config::{IwanConfig, PublicServer, StartupConfig, TARGET_HOST};
-use crate::oidc::{OidcBegin, OidcTransactions};
+use crate::config::{StartupConfig, TARGET_HOST, TunnelConfig};
 use crate::tunnel::{self, TunnelHandle};
 use axum::body::{Body, Bytes};
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, post};
+use axum::routing::post;
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use reqwest::{Client, Proxy};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use std::collections::HashSet;
+use serde_json::json;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,8 +18,7 @@ const SESSION_HEADER: &str = "x-dsh-ustc-session";
 const DIRECT_TIMEOUT: Duration = Duration::from_secs(3);
 const IWAN_TIMEOUT: Duration = Duration::from_secs(8);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RouteMode {
     Direct,
     Iwan,
@@ -44,53 +40,9 @@ pub(crate) struct AppState {
     session_token: String,
     direct: Client,
     mode: RwLock<RouteMode>,
-    iwan_config: RwLock<Option<IwanConfig>>,
-    selected_server_id: RwLock<Option<String>>,
+    tunnel_config: Option<TunnelConfig>,
     tunnel: Mutex<TunnelSlot>,
-    oidc: OidcTransactions,
-    reprobe_seconds: u64,
-    last_authorization: RwLock<Option<String>>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StatusSnapshot {
-    protocol: &'static str,
-    target: &'static str,
-    route: RouteMode,
-    iwan_configured: bool,
-    selected_server_id: Option<String>,
-    tunnel_running: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OidcCompleteRequest {
-    callback_url: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OidcCompleteResponse {
-    servers: Vec<PublicServer>,
-    iwan_config: IwanConfig,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct ModelEntry {
-    id: String,
-    name: String,
-}
-
-struct ProbeHttp {
-    status: StatusCode,
-    models: Option<Vec<ModelEntry>>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SelectRequest {
-    server_id: String,
+    recovery_seconds: u64,
 }
 
 #[derive(Debug)]
@@ -125,8 +77,8 @@ impl AppState {
         if config.session_token.len() < 32 {
             anyhow::bail!("session token must contain at least 32 characters");
         }
-        if let Some(iwan) = &config.iwan_config {
-            iwan.validate()?;
+        if let Some(tunnel) = &config.tunnel {
+            tunnel.validate()?;
         }
         let direct = Client::builder()
             .no_proxy()
@@ -138,30 +90,28 @@ impl AppState {
             session_token: config.session_token,
             direct,
             mode: RwLock::new(RouteMode::Direct),
-            iwan_config: RwLock::new(config.iwan_config),
-            selected_server_id: RwLock::new(config.selected_server_id),
+            tunnel_config: config.tunnel,
             tunnel: Mutex::new(TunnelSlot::default()),
-            oidc: OidcTransactions::default(),
-            reprobe_seconds: config.direct_reprobe_seconds.max(30),
-            last_authorization: RwLock::new(None),
+            recovery_seconds: config.direct_recovery_seconds.max(30),
         }))
     }
 
-    async fn snapshot(&self) -> StatusSnapshot {
-        let tunnel_running = self
-            .tunnel
-            .lock()
-            .await
-            .current
-            .as_ref()
-            .is_some_and(|state| !state.handle.is_finished());
-        StatusSnapshot {
-            protocol: "v1",
-            target: "api.llm.ustc.edu.cn:443",
-            route: *self.mode.read().await,
-            iwan_configured: self.iwan_config.read().await.is_some(),
-            selected_server_id: self.selected_server_id.read().await.clone(),
-            tunnel_running,
+    async fn set_mode(&self, next: RouteMode) {
+        let changed = {
+            let mut current = self.mode.write().await;
+            if *current == next {
+                false
+            } else {
+                *current = next;
+                true
+            }
+        };
+        if changed {
+            println!(
+                "{{\"event\":\"route\",\"iwan\":{}}}",
+                next == RouteMode::Iwan
+            );
+            std::io::stdout().flush().ok();
         }
     }
 
@@ -188,22 +138,14 @@ impl AppState {
         if slot.consecutive_failures > 0 {
             tokio::time::sleep(reconnect_delay(slot.consecutive_failures)).await;
         }
-        let config = self.iwan_config.read().await.clone().ok_or_else(|| ApiError {
+        let config = self.tunnel_config.clone().ok_or_else(|| ApiError {
             status: StatusCode::SERVICE_UNAVAILABLE,
             code: "IWAN_LOGIN_REQUIRED",
-            message: "iWAN login is required before the USTC API can be reached outside the campus network".into(),
+            message:
+                "select an iWAN line before the USTC API can be reached outside the campus network"
+                    .into(),
         })?;
-        let selected = self
-            .selected_server_id
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| ApiError {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                code: "IWAN_LINE_REQUIRED",
-                message: "select an iWAN line in the USTC provider settings".into(),
-            })?;
-        let handle = match tokio::task::spawn_blocking(move || tunnel::start(&config, &selected))
+        let handle = match tokio::task::spawn_blocking(move || tunnel::start(&config))
             .await
             .map_err(|error| ApiError::internal("IWAN_START_FAILED", error))?
         {
@@ -256,21 +198,15 @@ fn reconnect_delay(failures: u32) -> Duration {
 
 pub(crate) fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/v1/models", any(proxy_request))
-        .route("/v1/chat/completions", any(proxy_request))
-        .route("/_control/status", get(status))
-        .route("/_control/servers", get(servers))
-        .route("/_control/oidc/begin", post(oidc_begin))
-        .route("/_control/oidc/complete", post(oidc_complete))
-        .route("/_control/select", post(select_server))
-        .fallback(reject)
+        .route("/_route", post(refresh_route))
+        .fallback(proxy_request)
         .with_state(state)
 }
 
-pub(crate) fn start_reprobe(state: Arc<AppState>) {
+pub(crate) fn start_direct_recovery(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
-            let base = state.reprobe_seconds.saturating_mul(1_000);
+            let base = state.recovery_seconds.saturating_mul(1_000);
             let jitter = base / 10;
             let wait_ms = rand::Rng::gen_range(
                 &mut rand::thread_rng(),
@@ -280,16 +216,9 @@ pub(crate) fn start_reprobe(state: Arc<AppState>) {
             if *state.mode.read().await != RouteMode::Iwan {
                 continue;
             }
-            let authorization = state.last_authorization.read().await.clone();
-            let probe = probe_models(&state.direct, authorization.as_deref()).await;
-            if let Ok(probe) = probe {
-                *state.mode.write().await = RouteMode::Direct;
+            if check_upstream(&state.direct).await.is_ok() {
                 state.stop_tunnel().await;
-                if probe.status == StatusCode::OK
-                    && let Some(models) = probe.models
-                {
-                    emit_models(&models);
-                }
+                state.set_mode(RouteMode::Direct).await;
             }
         }
     });
@@ -309,113 +238,20 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<(), ApiEr
     Ok(())
 }
 
-async fn status(
+async fn refresh_route(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<StatusSnapshot>, ApiError> {
+) -> Result<Json<bool>, ApiError> {
     authenticate(&state, &headers).await?;
-    Ok(Json(state.snapshot().await))
-}
-
-async fn servers(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<Json<Vec<PublicServer>>, ApiError> {
-    authenticate(&state, &headers).await?;
-    Ok(Json(
-        state
-            .iwan_config
-            .read()
-            .await
-            .as_ref()
-            .map(IwanConfig::public_servers)
-            .unwrap_or_default(),
-    ))
-}
-
-async fn oidc_begin(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<Json<OidcBegin>, ApiError> {
-    authenticate(&state, &headers).await?;
-    Ok(Json(state.oidc.begin().await))
-}
-
-async fn oidc_complete(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(request): Json<OidcCompleteRequest>,
-) -> Result<Json<OidcCompleteResponse>, ApiError> {
-    authenticate(&state, &headers).await?;
-    let config = state
-        .oidc
-        .complete(&state.direct, &request.callback_url)
-        .await
-        .map_err(|error| ApiError {
-            status: StatusCode::BAD_REQUEST,
-            code: "OIDC_FAILED",
-            message: error.to_string(),
-        })?;
-    let response = OidcCompleteResponse {
-        servers: config.public_servers(),
-        iwan_config: config.clone(),
-    };
-    *state.iwan_config.write().await = Some(config);
-    Ok(Json(response))
-}
-
-async fn select_server(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(request): Json<SelectRequest>,
-) -> Result<Json<Value>, ApiError> {
-    authenticate(&state, &headers).await?;
-    let authorization = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    if authorization.is_some() {
-        *state.last_authorization.write().await = authorization.clone();
-    }
-    let exists = state
-        .iwan_config
-        .read()
-        .await
-        .as_ref()
-        .is_some_and(|config| {
-            config
-                .servers
-                .iter()
-                .any(|server| server.id == request.server_id)
-        });
-    if !exists {
-        return Err(ApiError {
-            status: StatusCode::BAD_REQUEST,
-            code: "UNKNOWN_LINE",
-            message: "selected iWAN line is unavailable".into(),
-        });
-    }
-    *state.selected_server_id.write().await = Some(request.server_id);
     state.stop_tunnel().await;
-    *state.mode.write().await = RouteMode::Direct;
-    let direct = probe_models(&state.direct, authorization.as_deref()).await;
-    match direct {
-        Ok(response) => {
-            if let Some(models) = response.models {
-                emit_models(&models);
-            }
-            Ok(Json(json!({ "selected": true, "route": "direct" })))
-        }
+    state.set_mode(RouteMode::Direct).await;
+    match check_upstream(&state.direct).await {
+        Ok(()) => Ok(Json(false)),
         Err(error) if fallback_before_request(&error) => {
             let client = state.ensure_tunnel().await?;
-            let response = probe_models(&client, authorization.as_deref())
-                .await
-                .map_err(upstream_error)?;
-            *state.mode.write().await = RouteMode::Iwan;
-            if let Some(models) = response.models {
-                emit_models(&models);
-            }
-            Ok(Json(json!({ "selected": true, "route": "iwan" })))
+            check_upstream(&client).await.map_err(upstream_error)?;
+            state.set_mode(RouteMode::Iwan).await;
+            Ok(Json(true))
         }
         Err(error) => Err(upstream_error(error)),
     }
@@ -427,32 +263,15 @@ async fn proxy_request(
 ) -> Result<Response, ApiError> {
     authenticate(&state, request.headers()).await?;
     validate_host(request.headers())?;
-    if let Some(value) = request
-        .headers()
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-    {
-        *state.last_authorization.write().await = Some(value.to_owned());
-    }
     let method = request.method().clone();
-    let path = request.uri().path().to_owned();
-    if request.uri().scheme().is_some() || request.uri().authority().is_some() {
-        return Err(ApiError {
-            status: StatusCode::BAD_REQUEST,
-            code: "ABSOLUTE_URL_REFUSED",
-            message: "absolute request targets are not accepted".into(),
-        });
-    }
-    if !matches!(
-        (method.clone(), path.as_str()),
-        (Method::GET, "/v1/models") | (Method::POST, "/v1/chat/completions")
-    ) {
+    if method == Method::CONNECT {
         return Err(ApiError {
             status: StatusCode::METHOD_NOT_ALLOWED,
-            code: "METHOD_NOT_ALLOWED",
-            message: "method is not allowed".into(),
+            code: "CONNECT_REFUSED",
+            message: "CONNECT requests are not accepted".into(),
         });
     }
+    let path = upstream_path(request.uri())?;
     let (parts, body) = request.into_parts();
     let bytes = axum::body::to_bytes(body, 32 * 1024 * 1024)
         .await
@@ -509,7 +328,7 @@ async fn proxy_request(
         Ok(response) => Ok(response),
         Err(error) if fallback_before_request(&error) => {
             let client = state.ensure_tunnel().await?;
-            *state.mode.write().await = RouteMode::Iwan;
+            state.set_mode(RouteMode::Iwan).await;
             send(
                 &state,
                 &client,
@@ -530,61 +349,13 @@ fn fallback_before_request(error: &reqwest::Error) -> bool {
     error.is_connect() || error.is_timeout()
 }
 
-async fn probe_models(
-    client: &Client,
-    authorization: Option<&str>,
-) -> Result<ProbeHttp, reqwest::Error> {
-    let mut request = client
+async fn check_upstream(client: &Client) -> Result<(), reqwest::Error> {
+    client
         .get("https://api.llm.ustc.edu.cn/v1/models")
-        .header("accept", "application/json");
-    if let Some(value) = authorization {
-        request = request.header("authorization", value);
-    }
-    let response = request.send().await?;
-    let status = response.status();
-    let models = if status == StatusCode::OK {
-        response
-            .bytes()
-            .await
-            .ok()
-            .and_then(|bytes| parse_models(&bytes))
-    } else {
-        None
-    };
-    Ok(ProbeHttp { status, models })
-}
-
-fn parse_models(bytes: &[u8]) -> Option<Vec<ModelEntry>> {
-    let value: Value = serde_json::from_slice(bytes).ok()?;
-    let data = value.get("data")?.as_array()?;
-    let mut seen = HashSet::new();
-    let models = data
-        .iter()
-        .filter_map(|item| {
-            let id = item.get("id")?.as_str()?.trim();
-            if id.is_empty() || id.len() > 256 || !seen.insert(id.to_owned()) {
-                return None;
-            }
-            let name = item
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .unwrap_or(id);
-            Some(ModelEntry {
-                id: id.to_owned(),
-                name: name.to_owned(),
-            })
-        })
-        .collect::<Vec<_>>();
-    (!models.is_empty()).then_some(models)
-}
-
-fn emit_models(models: &[ModelEntry]) {
-    if let Ok(line) = serde_json::to_string(&json!({ "event": "models", "models": models })) {
-        println!("{line}");
-        std::io::stdout().flush().ok();
-    }
+        .header("accept", "application/json")
+        .send()
+        .await
+        .map(|_| ())
 }
 
 async fn send(
@@ -609,7 +380,9 @@ async fn send(
         if item.is_err() && route == RouteMode::Direct {
             let state = route_state.clone();
             tokio::spawn(async move {
-                *state.mode.write().await = RouteMode::Iwan;
+                if state.tunnel_config.is_some() {
+                    state.set_mode(RouteMode::Iwan).await;
+                }
             });
         }
         item
@@ -697,16 +470,18 @@ fn validate_host(headers: &HeaderMap) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn reject(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    authenticate(&state, &headers).await?;
-    Err(ApiError {
-        status: StatusCode::NOT_FOUND,
-        code: "FIXED_TARGET_ONLY",
-        message: "this helper only serves the USTC LLM API and its private control protocol".into(),
-    })
+fn upstream_path(uri: &Uri) -> Result<String, ApiError> {
+    if uri.scheme().is_some() || uri.authority().is_some() {
+        return Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "ABSOLUTE_URL_REFUSED",
+            message: "absolute and authority-form request targets are not accepted".into(),
+        });
+    }
+    Ok(uri
+        .path_and_query()
+        .map(|value| value.as_str().to_owned())
+        .unwrap_or_else(|| "/".into()))
 }
 
 fn upstream_error(error: reqwest::Error) -> ApiError {
@@ -714,19 +489,15 @@ fn upstream_error(error: reqwest::Error) -> ApiError {
     ApiError {
         status: StatusCode::BAD_GATEWAY,
         code: "UPSTREAM_TRANSPORT",
-        message: public_transport_error(&error),
-    }
-}
-
-fn public_transport_error(error: &reqwest::Error) -> String {
-    if error.is_timeout() {
-        "connection timed out".into()
-    } else if error.is_connect() {
-        "could not connect to api.llm.ustc.edu.cn".into()
-    } else if error.is_body() {
-        "upstream response stream failed".into()
-    } else {
-        "USTC API transport failed".into()
+        message: if error.is_timeout() {
+            "connection timed out".into()
+        } else if error.is_connect() {
+            "could not connect to api.llm.ustc.edu.cn".into()
+        } else if error.is_body() {
+            "upstream response stream failed".into()
+        } else {
+            "USTC API transport failed".into()
+        },
     }
 }
 
@@ -740,9 +511,8 @@ mod tests {
     fn test_state() -> Arc<AppState> {
         AppState::new(StartupConfig {
             session_token: "a".repeat(32),
-            iwan_config: None,
-            selected_server_id: None,
-            direct_reprobe_seconds: 300,
+            tunnel: None,
+            direct_recovery_seconds: 300,
         })
         .unwrap()
     }
@@ -782,53 +552,61 @@ mod tests {
 
     #[tokio::test]
     async fn every_local_route_requires_the_session_token() {
-        for uri in [
-            "/_control/status",
-            "/_control/diagnose",
-            "/v1/models",
-            "/not-a-proxy",
-        ] {
+        for uri in ["/v1/models", "/not-a-proxy"] {
             let response = router(test_state())
                 .oneshot(HttpRequest::get(uri).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
         }
+        let route_refresh = router(test_state())
+            .oneshot(HttpRequest::post("/_route").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(route_refresh.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn rejects_unknown_paths_and_wrong_data_plane_methods() {
-        let unknown = router(test_state())
+    async fn rejects_connect_even_with_an_origin_form_target() {
+        let response = router(test_state())
             .oneshot(
-                HttpRequest::get("/https://example.com/")
+                HttpRequest::builder()
+                    .method(Method::CONNECT)
+                    .uri("/v1/models")
                     .header(SESSION_HEADER, "a".repeat(32))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
 
-        let removed_diagnostics = router(test_state())
-            .oneshot(
-                HttpRequest::post("/_control/diagnose")
-                    .header(SESSION_HEADER, "a".repeat(32))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(removed_diagnostics.status(), StatusCode::NOT_FOUND);
+    #[test]
+    fn accepts_any_relative_upstream_path_and_query() {
+        let uri: Uri = "/v1/embeddings?model=custom".parse().unwrap();
+        assert_eq!(upstream_path(&uri).unwrap(), "/v1/embeddings?model=custom");
 
-        let wrong_method = router(test_state())
-            .oneshot(
-                HttpRequest::put("/v1/models")
-                    .header(SESSION_HEADER, "a".repeat(32))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(wrong_method.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let absolute: Uri = "https://example.com/v1/models".parse().unwrap();
+        assert_eq!(
+            upstream_path(&absolute).unwrap_err().status,
+            StatusCode::BAD_REQUEST
+        );
+
+        let authority: Uri = "api.llm.ustc.edu.cn:443".parse().unwrap();
+        assert_eq!(
+            upstream_path(&authority).unwrap_err().status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn rejects_non_loopback_local_hosts() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("example.com"));
+        assert_eq!(
+            validate_host(&headers).unwrap_err().status,
+            StatusCode::BAD_REQUEST
+        );
     }
 }
