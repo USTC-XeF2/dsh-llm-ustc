@@ -13,7 +13,7 @@ import {
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter, type ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
-import { createProvider, type Model } from '@earendil-works/pi-ai'
+import { createProvider, defaultProviderAuthContext, InMemoryCredentialStore, type Api, type Model } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import {
   API_KEY_REF,
@@ -29,15 +29,16 @@ const RETRY_POLICY = resolveRetryPolicy(undefined, 'llm-ustc.retryPolicy')
 
 const USTC_REASONING_EFFORTS = [
   { id: ReasoningEffortId('off'), name: 'Off' },
+  { id: ReasoningEffortId('low'), name: 'Low' },
   { id: ReasoningEffortId('high'), name: 'High' },
   { id: ReasoningEffortId('max'), name: 'Max' },
 ] as const
 
 const LONG_CONTEXT_WINDOW = 1_000_000
-const K3_CONTEXT_WINDOW = 600_000
 
 export class UstcAdapter extends LlmAdapter {
   private delegate: { key: string; adapter: PiAiAdapter } | undefined
+  private readonly auth = { credentials: new InMemoryCredentialStore(), authContext: defaultProviderAuthContext() }
 
   constructor(
     private readonly ctx: Context,
@@ -59,12 +60,15 @@ export class UstcAdapter extends LlmAdapter {
 
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     this.assertProvider(provider)
-    return this.catalog.models().map(model => ({
-      provider: PROVIDER,
-      id: model.id,
-      name: model.name,
-      inputModalities: ['text'],
-    }))
+    return this.catalog.models().map(model => {
+      const capabilities = modelCapabilities(model.id)
+      return {
+        provider: PROVIDER,
+        id: model.id,
+        name: model.name,
+        inputModalities: capabilities.input,
+      }
+    })
   }
 
   override async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
@@ -75,7 +79,7 @@ export class UstcAdapter extends LlmAdapter {
       provider: PROVIDER,
       id: model,
       name: match?.name ?? model,
-      inputModalities: ['text'],
+      inputModalities: capabilities.input,
       context: { contextWindow: capabilities.contextWindow },
       defaultMaxTokens: DEFAULT_MAX_TOKENS,
       ...(capabilities.reasoning ? { reasoning: { efforts: USTC_REASONING_EFFORTS } } : {}),
@@ -107,6 +111,7 @@ export class UstcAdapter extends LlmAdapter {
     const profiles = new Map([[PROVIDER, profile]])
     const adapter = new PiAiAdapter({
       profiles: () => profiles,
+      auth: this.auth,
       resolveApiKey: async () => {
         const hit = await this.ctx.credentials.resolve(credentialRef(API_KEY_REF))
         if (hit === undefined) throw new LlmError(
@@ -170,14 +175,14 @@ function makeProfile(
       ...(capabilities.reasoning ? {
         thinkingLevelMap: {
           minimal: null,
-          low: null,
+          low: 'low',
           medium: null,
           high: 'high',
           xhigh: null,
           max: 'max',
         },
       } : {}),
-      input: ['text'],
+      input: capabilities.input,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: capabilities.contextWindow,
       maxTokens: DEFAULT_MAX_TOKENS,
@@ -194,7 +199,7 @@ function makeProfile(
       },
     }
   })
-  const provider = createProvider({
+  const provider = createProvider<Api>({
     id: PROVIDER,
     name: PROVIDER_NAME,
     baseUrl: baseURL,
@@ -221,17 +226,20 @@ function makeProfile(
     defaultMaxTokens: DEFAULT_MAX_TOKENS,
     defaultInput: ['text'],
     streamIdleTimeoutMs: 300_000,
+    maxRequestImageBytes: 20 * 1024 * 1024,
+    requestImagePixelBudget: 4_194_304,
+    requestImageMaxBytes: 1_048_576,
     retryPolicy: RETRY_POLICY,
     piProvider: provider,
+    modelErrors: new Map(),
     configuredMaxTokens: new Map(models.map(model => [model.id, DEFAULT_MAX_TOKENS])),
   }
 }
 
-function modelCapabilities(model: string): { contextWindow: number; reasoning: boolean } {
+function modelCapabilities(model: string): { contextWindow: number; input: ('text' | 'image')[]; reasoning: boolean } {
   const id = model.toLowerCase()
-  if (id.startsWith('deepseek-v4') || id.startsWith('glm-5')) {
-    return { contextWindow: LONG_CONTEXT_WINDOW, reasoning: true }
+  if (id.startsWith('deepseek') || id.startsWith('glm-5')) {
+    return { contextWindow: LONG_CONTEXT_WINDOW, input: ['text', 'image'], reasoning: true }
   }
-  if (id === 'k3') return { contextWindow: K3_CONTEXT_WINDOW, reasoning: true }
-  return { contextWindow: DEFAULT_CONTEXT_WINDOW, reasoning: false }
+  return { contextWindow: DEFAULT_CONTEXT_WINDOW, input: ['text'], reasoning: false }
 }

@@ -71,9 +71,9 @@ describe('helper authentication', () => {
     globalThis.fetch = async (_input, init) => {
       headers = new Headers(init?.headers)
       return new Response([
-        'data: {"id":"test","object":"chat.completion.chunk","created":0,"model":"deepseek-v4-flash-ascend","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
+        'data: {"id":"test","object":"chat.completion.chunk","created":0,"model":"deepseek-flash","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
         '',
-        'data: {"id":"test","object":"chat.completion.chunk","created":0,"model":"deepseek-v4-flash-ascend","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}',
+        'data: {"id":"test","object":"chat.completion.chunk","created":0,"model":"deepseek-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}',
         '',
         'data: [DONE]',
         '',

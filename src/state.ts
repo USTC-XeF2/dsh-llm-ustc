@@ -1,16 +1,11 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { homedir } from 'node:os'
+import { dirname } from 'node:path'
+import { dshCachePath, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { DEFAULT_MODEL } from './constants.ts'
 import type { CachedModel, PluginState } from './types.ts'
 
 const FALLBACK: PluginState = {
   models: [{ id: DEFAULT_MODEL, name: DEFAULT_MODEL }],
-}
-
-export function resolveDshHome(): string {
-  const configured = process.env.DSH_HOME?.trim()
-  return configured === undefined || configured.length === 0 ? join(homedir(), '.dsh') : configured
 }
 
 export class StateStore {
@@ -19,7 +14,7 @@ export class StateStore {
   private writes: Promise<void> = Promise.resolve()
 
   constructor(dshHome = resolveDshHome()) {
-    this.filename = join(dshHome, 'plugins', 'dsh-llm-ustc', 'state.json')
+    this.filename = dshCachePath({ dshHome }, 'dsh-llm-ustc', 'models.json')
   }
 
   async load(): Promise<void> {

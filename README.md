@@ -6,7 +6,7 @@ DeepSeek Harness `ustc` LLM Provider，访问中国科学技术大学
 
 ## 要求
 
-- DeepSeek Harness `0.1.0-rc.7`
+- DeepSeek Harness `0.2.0-rc.2`
 - Node.js 24（也支持 Node.js `^22.19.0`）
 - Windows、macOS 或 Linux，x64/ARM64
 - 科大 LLM API Key
@@ -23,20 +23,20 @@ dsh plugin --profile web add dsh-llm-ustc@latest
 如需固定版本，可以将 `latest` 换成具体版本号：
 
 ```sh
-dsh plugin --profile web add dsh-llm-ustc@0.2.0
+dsh plugin --profile web add dsh-llm-ustc@0.2.1
 ```
 
 安装时 npm 会通过六个 `optionalDependencies` 之一自动选择当前操作系统和架构的
 原生 helper；不支持的平台或缺失的原生包会返回明确错误。安装完成后重启正在运行的
 DSH Web 进程。
 
-打开 DSH Web 的“设置 -> 插件 -> 插件配置”，展开“科大大模型”：
+在 DSH Web 主页左上角打开“插件”，从“已安装”进入“科大大模型”的详情页：
 
-1. 保存 API Key（凭据引用固定为 `USTC_LLM_API_KEY`），并同步模型目录。
+1. 保存 API Key（凭据引用固定为 `USTC_LLM_API_KEY`），并同步模型目录。模型页也会使用同一凭据引用。
 2. 公网使用时启动 USTC 登录，在浏览器完成认证后粘贴完整回调 URL，再显式选择一条线路。
 
 模型 ID 直接来自 `/v1/models`。首次离线时仅显示
-`deepseek-v4-flash-ascend` 引导项；同步成功后会缓存最近可用目录。
+`deepseek-flash` 引导项；同步成功后会缓存最近可用目录。
 
 ## 网络边界
 
@@ -59,7 +59,10 @@ DSH Web 进程。
 
 - `USTC_LLM_API_KEY`：科大 LLM API Key。
 - `USTC_LLM_IWAN_CONFIG`：插件私有 iWAN 凭据，不写入 Provider 配置。
-- `$DSH_HOME/plugins/dsh-llm-ustc/state.json`：模型缓存与非敏感状态。
+- `$DSH_HOME/profiles/web/cordis.patch.yml`：所选 iWAN 线路和直连恢复间隔，归属 `llm-ustc` 插件配置行；其他 profile 使用自己的同名文件。
+- `$DSH_HOME/cache/dsh-llm-ustc/models.json`：可重新同步的模型目录缓存。升级后旧缓存不会迁移，可在插件详情页手动同步。
+
+升级到 DSH 0.2 后，DSH 会在首次启动时把旧 `$DSH_HOME/settings.yaml` 中的插件设置导入当前 profile，并将旧文件改名为 `settings.yaml.imported`。请确保导入时已启用本插件。
 
 ## 验证
 

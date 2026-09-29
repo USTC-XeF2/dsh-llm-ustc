@@ -1,10 +1,10 @@
-import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-client-connection'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { SettingsConflictError, settingsNamespace } from '@deepseek-ai/dsh-settings'
-import type {} from '@deepseek-ai/dsh-host-webserver'
+import { SettingsConflictError } from '@deepseek-ai/dsh-settings'
 import { API_KEY_REF, IWAN_CONFIG_REF, SETTINGS_NS, SETTINGS_ROUTE } from './constants.ts'
 import type { Config } from './config.ts'
+import { resolveConfig } from './config.ts'
 import type { HelperManager } from './helper.ts'
 import { parseIwanConfig, publicIwanServers } from './iwan.ts'
 import type { ModelCatalog } from './model-catalog.ts'
@@ -45,12 +45,14 @@ export class UstcWebBackend {
     private readonly catalog: ModelCatalog,
     private readonly store: StateStore,
     private readonly iwanAuth: IwanAuthenticator = new IwanAuthenticator(),
+    private readonly settingsId = SETTINGS_NS,
+    private readonly config?: Config,
   ) {}
 
   async snapshot(): Promise<SettingsSnapshot> {
-    const descriptor = this.ctx.settings.describe({ redactSecrets: true }).find(row => row.ns === SETTINGS_NS)
+    const descriptor = this.ctx.settings.describe({ redactSecrets: true }).find(row => row.ns === this.settingsId)
     if (descriptor === undefined) throw new Error('llm-ustc settings namespace is not registered')
-    const value = descriptor.value as Config
+    const value = descriptor.value as { selectedServerId?: string }
     const [apiKey, iwan, iwanSecret] = await Promise.all([
       this.ctx.credentials.describe(credentialRef(API_KEY_REF)),
       this.ctx.credentials.describe(credentialRef(IWAN_CONFIG_REF)),
@@ -94,8 +96,9 @@ export class UstcWebBackend {
         return { servers: publicIwanServers(JSON.stringify(config)), snapshot: await this.snapshot() }
       }
       case 'logoutIwan':
-        await this.ctx.settings.mutate(settingsNamespace(SETTINGS_NS), [{ op: 'unset', path: ['selectedServerId'] }], request.expectedRevision)
+        await this.ctx.settings.mutate(this.settingsId, [{ op: 'unset', path: ['selectedServerId'] }], request.expectedRevision)
         await this.ctx.credentials.unset(credentialRef(IWAN_CONFIG_REF))
+        if (this.config !== undefined) this.helper.reconfigure(resolveConfig(this.config))
         await this.helper.stop()
         return this.snapshot()
       case 'refreshRoute': {
@@ -109,11 +112,12 @@ export class UstcWebBackend {
         }
         const rollback = this.helper.stageSelectedServer(request.serverId)
         try {
-          await this.ctx.settings.update(settingsNamespace(SETTINGS_NS), { selectedServerId: request.serverId }, request.expectedRevision)
+          await this.ctx.settings.update(this.settingsId, { selectedServerId: request.serverId }, request.expectedRevision)
         } catch (error) {
           rollback()
           throw error
         }
+        if (this.config !== undefined) this.helper.reconfigure(resolveConfig(this.config))
         await this.helper.refreshRoute()
         return this.snapshot()
       }
@@ -125,24 +129,22 @@ export class UstcWebBackend {
 }
 
 export function installWeb(ctx: Context, backend: UstcWebBackend): void {
-  ctx.inject(['webServer'], webCtx => {
-    const dispose = webCtx.webServer.register({
-      kind: 'exact',
+  ctx.inject(['connection'], connectionCtx => {
+    connectionCtx.connection.fetch.register({
       path: SETTINGS_ROUTE,
-      handler: async (req, res) => {
+      methods: ['GET', 'POST'],
+      requestBody: 'buffered',
+      fetch: async request => {
         try {
-          if (req.method === 'GET') return responseJson(res, 200, { ok: true, value: await backend.snapshot() })
-          if (req.method !== 'POST') return responseError(res, 405, 'METHOD_NOT_ALLOWED', 'use GET or POST')
-          if (!sameOriginPost(req)) return responseError(res, 403, 'CROSS_ORIGIN', 'cross-origin request refused')
-          const request = parseWebRequest(await readJson(req))
-          responseJson(res, 200, { ok: true, value: await backend.handle(request) })
+          if (request.method === 'GET') return responseJson(200, { ok: true, value: await backend.snapshot() })
+          const input = parseWebRequest(await readJson(request))
+          return responseJson(200, { ok: true, value: await backend.handle(input) })
         } catch (error) {
           const status = error instanceof SettingsConflictError ? 409 : error instanceof TypeError ? 400 : 500
-          responseError(res, status, error instanceof SettingsConflictError ? 'SETTINGS_CONFLICT' : 'REQUEST_FAILED', publicMessage(error))
+          return responseError(status, error instanceof SettingsConflictError ? 'SETTINGS_CONFLICT' : 'REQUEST_FAILED', publicMessage(error))
         }
       },
     })
-    webCtx.effect(() => dispose, 'dsh-llm-ustc: web settings route')
   })
 }
 
@@ -150,40 +152,34 @@ function publicCredential(info: { configured: boolean; source?: string; writable
   return { configured: info.configured, ...(info.source === undefined ? {} : { source: info.source }), writable: info.writable }
 }
 
-function responseJson(res: ServerResponse, status: number, body: unknown): void {
-  const bytes = Buffer.from(JSON.stringify(body))
-  res.setHeader('content-type', 'application/json; charset=utf-8')
-  res.setHeader('content-length', String(bytes.length))
-  res.setHeader('cache-control', 'no-store')
-  res.setHeader('x-content-type-options', 'nosniff')
-  res.setHeader('content-security-policy', "default-src 'none'; frame-ancestors 'none'")
-  res.writeHead(status)
-  res.end(bytes)
+function responseJson(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
+  } })
 }
 
-function responseError(res: ServerResponse, status: number, code: string, message: string): void {
-  responseJson(res, status, { ok: false, error: { code, message } })
+function responseError(status: number, code: string, message: string): Response {
+  return responseJson(status, { ok: false, error: { code, message } })
 }
 
-function sameOriginPost(req: IncomingMessage): boolean {
-  if (req.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = req.headers.origin
-  if (origin === undefined) return ['same-origin', 'same-site', 'none'].includes(req.headers['sec-fetch-site'] ?? '')
-  if (req.headers.host === undefined) return false
-  try {
-    const parsed = new URL(origin)
-    return ['http:', 'https:'].includes(parsed.protocol) && parsed.host === req.headers.host
-  } catch { return false }
-}
-
-async function readJson(req: IncomingMessage): Promise<unknown> {
-  if (req.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') throw new TypeError('Content-Type must be application/json')
+async function readJson(req: Request): Promise<unknown> {
+  if (req.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') throw new TypeError('Content-Type must be application/json')
+  const reader = req.body?.getReader()
+  if (reader === undefined) throw new TypeError('request body is empty')
   const parts: Buffer[] = []
   let size = 0
-  for await (const part of req) {
-    const bytes = Buffer.isBuffer(part) ? part : Buffer.from(part)
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    const bytes = Buffer.from(value)
     size += bytes.length
-    if (size > 64 * 1024) throw new TypeError('request body exceeds 65536 bytes')
+    if (size > 64 * 1024) {
+      await reader.cancel()
+      throw new TypeError('request body exceeds 65536 bytes')
+    }
     parts.push(bytes)
   }
   if (parts.length === 0) throw new TypeError('request body is empty')
