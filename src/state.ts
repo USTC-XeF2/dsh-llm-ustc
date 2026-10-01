@@ -45,6 +45,11 @@ export class StateStore {
     await this.persist()
   }
 
+  async removeModel(id: string): Promise<void> {
+    this.current = { ...this.current, models: this.current.models.filter(model => model.id !== id) }
+    await this.persist()
+  }
+
   private async persist(): Promise<void> {
     const snapshot = `${JSON.stringify(this.current, null, 2)}\n`
     this.writes = this.writes.then(async () => {
@@ -61,7 +66,7 @@ export function normalizeModels(models: readonly CachedModel[]): CachedModel[] {
   const unique = new Map<string, CachedModel>()
   for (const model of models) {
     const id = model.id.trim()
-    if (id.length === 0 || id.length > 256 || /^claude/iu.test(id) || unique.has(id)) continue
+    if (id.length === 0 || id.length > 256 || /^(?:claude|smart)/iu.test(id) || id.toLowerCase() === 'unlimited-ocr' || unique.has(id)) continue
     const name = model.name.trim()
     unique.set(id, { id, name: name.length === 0 ? id : name })
   }
@@ -77,7 +82,7 @@ function parseState(value: unknown): PluginState {
   if (!isRecord(value) || !Array.isArray(value.models)) return structuredClone(FALLBACK)
   let models: CachedModel[]
   try {
-    models = normalizeModels(value.models.filter(isCachedModel))
+    models = value.models.length === 0 ? [] : normalizeModels(value.models.filter(isCachedModel))
   } catch {
     models = structuredClone(FALLBACK.models)
   }

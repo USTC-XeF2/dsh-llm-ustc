@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { Button, IconRefreshOutlineMedium, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconCloseOutlineRegular, IconRefreshOutlineMedium, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
@@ -45,6 +45,8 @@ const en = {
   models: 'Model catalog',
   syncModels: 'Sync models',
   syncingModels: 'Syncing...',
+  removeModel: 'Remove model',
+  modelsEmpty: 'No models',
   refreshedAt: 'Refreshed',
   never: 'Never',
   loading: 'Loading...',
@@ -89,6 +91,8 @@ const zh: Record<LocaleKey, string> = {
   models: '模型目录',
   syncModels: '同步模型',
   syncingModels: '正在同步...',
+  removeModel: '删除模型',
+  modelsEmpty: '暂无模型',
   refreshedAt: '刷新时间',
   never: '从未',
   loading: '正在加载...',
@@ -137,7 +141,7 @@ interface OidcBegin {
 interface ApiSuccess<T> { ok: true; value: T }
 interface ApiFailure { ok: false; error: { code: string; message: string } }
 
-type Action = 'load' | 'saveApiKey' | 'unsetApiKey' | 'selectKeySource' | 'beginTokenworks' | 'cancelTokenworks' | 'logoutTokenworks' | 'beginOidc' | 'completeOidc' | 'logoutIwan' | 'refreshRoute' | 'selectServer' | 'syncModels'
+type Action = 'load' | 'saveApiKey' | 'unsetApiKey' | 'selectKeySource' | 'beginTokenworks' | 'cancelTokenworks' | 'logoutTokenworks' | 'beginOidc' | 'completeOidc' | 'logoutIwan' | 'refreshRoute' | 'selectServer' | 'syncModels' | 'removeModel'
 
 interface ViewState {
   status: 'idle' | 'loading' | 'ready' | 'error'
@@ -356,8 +360,15 @@ function UstcBundleConfig({ controller, t }: BundleConfigProps) {
         <div><h3>{t('models')}</h3><p>{t('refreshedAt')}: {snapshot.modelsUpdatedAt === undefined ? t('never') : new Date(snapshot.modelsUpdatedAt).toLocaleString()}</p></div>
         <Button size="sm" variant="outline" disabled={busy || !(snapshot.keySource === 'manual' ? snapshot.apiKey.configured : snapshot.tokenworks.configured)} onClick={() => { void controller.mutateSnapshot('syncModels') }}>{state.action === 'syncModels' ? t('syncingModels') : t('syncModels')}</Button>
       </div>
-      <div className="ulu-model-list">{snapshot.models.map(model => <div className="ulu-model-entry" key={model.id}><code>{model.id}</code>{model.name === model.id ? null : <span>{model.name}</span>}</div>)}</div>
-      {state.errorAction === 'syncModels' ? <p className="ulu-alert error">{state.error}</p> : null}
+      <div className="ulu-model-list">
+        {snapshot.models.map(model => <div className="ulu-model-entry" key={model.id}>
+          <code>{model.id}</code>
+          <span>{model.name === model.id ? '' : model.name}</span>
+          <button className="ulu-model-remove" type="button" title={t('removeModel')} aria-label={`${t('removeModel')}: ${model.id}`} disabled={busy} onClick={() => { void controller.mutateSnapshot('removeModel', { modelId: model.id }) }}><IconCloseOutlineRegular /></button>
+        </div>)}
+        {snapshot.models.length === 0 ? <div className="ulu-model-empty">{t('modelsEmpty')}</div> : null}
+      </div>
+      {state.errorAction === 'syncModels' || state.errorAction === 'removeModel' ? <p className="ulu-alert error">{state.error}</p> : null}
     </section>
     {state.errorAction === 'refreshRoute' ? <p className="ulu-alert error">{state.error}</p> : null}
   </div>
@@ -381,8 +392,10 @@ const CSS = `
 .ulu-alert{margin:0;padding:10px 0;border-top:0.5px solid var(--dsw-alias-border-l2);font-size:12px;line-height:1.5}.ulu-alert.warning{color:var(--dsw-alias-label-tertiary)}.ulu-alert.error{color:var(--dsw-alias-label-error)}
 .ulu-loading{padding:12px 0;color:var(--dsw-alias-label-tertiary);font-size:12px}.ulu-load-error{display:flex;align-items:center;justify-content:space-between;gap:12px}.ulu-load-error .ulu-alert{flex:1;border-top:0}
 .ulu-model-list{display:flex;max-height:300px;min-width:0;flex-direction:column;overflow:auto;border-top:0.5px solid var(--dsw-alias-border-l2)}
-.ulu-model-entry{display:grid;min-width:0;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:8px;padding:9px 2px;border-bottom:0.5px solid var(--dsw-alias-border-l2);font-size:12px;line-height:18px}
+.ulu-model-entry{display:grid;min-width:0;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) auto;align-items:center;gap:8px;padding:9px 2px;border-bottom:0.5px solid var(--dsw-alias-border-l2);font-size:12px;line-height:18px}
 .ulu-model-entry code,.ulu-model-entry span{min-width:0;overflow-wrap:anywhere}.ulu-model-entry span{color:var(--dsw-alias-label-tertiary)}
+.ulu-model-remove{display:inline-flex;width:20px;height:20px;align-items:center;justify-content:center;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer}.ulu-model-remove:hover:not(:disabled){color:var(--dsw-alias-label-primary)}.ulu-model-remove:disabled{opacity:.5;cursor:default}
+.ulu-model-empty{padding:9px 2px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 `
 
 function installStyles(): () => void {

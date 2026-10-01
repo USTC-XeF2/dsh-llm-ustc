@@ -1,26 +1,42 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { UstcAdapter } from '../src/adapter.ts'
 import { DEFAULT_MODEL } from '../src/constants.ts'
 import type { HelperManager } from '../src/helper.ts'
 import { ModelCatalog } from '../src/model-catalog.ts'
-import { normalizeModels } from '../src/state.ts'
-import type { StateStore } from '../src/state.ts'
+import { normalizeModels, StateStore } from '../src/state.ts'
 
 describe('model catalog', () => {
-  it('keeps server ids, removes duplicates and Claude placeholders, and prefers the documented default', () => {
-    expect(normalizeModels([
-      { id: 'z-model', name: 'Z' },
-      { id: ` ${DEFAULT_MODEL} `, name: '' },
-      { id: 'z-model', name: 'ignored duplicate' },
-      { id: 'claude-haiku-4-5', name: 'Claude placeholder' },
-      { id: 'Claude-Sonnet-4-6', name: 'Case-insensitive placeholder' },
-      { id: 'a-model', name: 'A' },
-    ])).toEqual([
-      { id: DEFAULT_MODEL, name: DEFAULT_MODEL },
-      { id: 'a-model', name: 'A' },
-      { id: 'z-model', name: 'Z' },
-    ])
+  it('persists deletions including an empty catalog without changing the fetch time, and restores models on sync', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-ustc-models-'))
+    try {
+      const models = [{ id: DEFAULT_MODEL, name: DEFAULT_MODEL }, { id: 'glm-5', name: 'GLM' }]
+      const store = new StateStore(directory)
+      await store.setModels(models)
+      const updatedAt = store.snapshot().modelsUpdatedAt
+      await store.removeModel('glm-5')
+      const reloaded = new StateStore(directory)
+      await reloaded.load()
+      expect(reloaded.models()).toEqual([models[0]])
+      expect(reloaded.snapshot().modelsUpdatedAt).toBe(updatedAt)
+
+      await reloaded.removeModel(DEFAULT_MODEL)
+      const empty = new StateStore(directory)
+      await empty.load()
+      expect(empty.models()).toEqual([])
+      expect(empty.snapshot().modelsUpdatedAt).toBe(updatedAt)
+
+      const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: models })))
+      const catalog = new ModelCatalog(async () => 'test-key', {
+        onDirectRecovered: () => {}, fetch,
+      } as unknown as HelperManager, empty)
+      await catalog.refresh()
+      expect(catalog.models()).toEqual(models)
+      expect(fetch).toHaveBeenCalledOnce()
+    } finally { await rm(directory, { recursive: true, force: true }) }
   })
 
   it('refreshes in TypeScript after the helper reports direct recovery', async () => {

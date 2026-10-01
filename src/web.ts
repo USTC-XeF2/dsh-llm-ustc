@@ -42,6 +42,7 @@ type WebRequest =
   | { action: 'refreshRoute' }
   | { action: 'selectServer'; serverId: string; expectedRevision: number }
   | { action: 'syncModels' }
+  | { action: 'removeModel'; modelId: string }
 
 export class UstcWebBackend {
   constructor(
@@ -147,6 +148,9 @@ export class UstcWebBackend {
       case 'syncModels':
         await this.catalog.refresh()
         return this.snapshot()
+      case 'removeModel':
+        await this.store.removeModel(request.modelId)
+        return this.snapshot()
     }
   }
 }
@@ -221,6 +225,9 @@ function parseWebRequest(value: unknown): WebRequest {
     case 'completeOidc':
       if (typeof value.callbackUrl !== 'string') throw new TypeError('callbackUrl must be a string')
       return { action: value.action, callbackUrl: value.callbackUrl }
+    case 'removeModel':
+      if (typeof value.modelId !== 'string' || !value.modelId.trim()) throw new TypeError('modelId is required')
+      return { action: value.action, modelId: value.modelId }
     case 'selectServer':
       if (typeof value.serverId !== 'string' || !Number.isSafeInteger(value.expectedRevision)) throw new TypeError('serverId and expectedRevision are required')
       return { action: value.action, serverId: value.serverId, expectedRevision: value.expectedRevision as number }
