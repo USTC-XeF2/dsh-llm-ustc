@@ -190,10 +190,7 @@ fn reconnect_delay(failures: u32) -> Duration {
     let exponent = failures.saturating_sub(1).min(5);
     let ceiling_ms = (1_000u64 << exponent).min(30_000);
     let floor_ms = ceiling_ms.saturating_mul(3) / 4;
-    Duration::from_millis(rand::Rng::gen_range(
-        &mut rand::thread_rng(),
-        floor_ms..=ceiling_ms,
-    ))
+    Duration::from_millis(rand::random_range(floor_ms..=ceiling_ms))
 }
 
 pub(crate) fn router(state: Arc<AppState>) -> Router {
@@ -208,10 +205,8 @@ pub(crate) fn start_direct_recovery(state: Arc<AppState>) {
         loop {
             let base = state.recovery_seconds.saturating_mul(1_000);
             let jitter = base / 10;
-            let wait_ms = rand::Rng::gen_range(
-                &mut rand::thread_rng(),
-                base.saturating_sub(jitter)..=base.saturating_add(jitter),
-            );
+            let wait_ms =
+                rand::random_range(base.saturating_sub(jitter)..=base.saturating_add(jitter));
             tokio::time::sleep(Duration::from_millis(wait_ms)).await;
             if *state.mode.read().await != RouteMode::Iwan {
                 continue;

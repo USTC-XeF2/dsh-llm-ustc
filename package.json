@@ -1,6 +1,6 @@
 {
   "name": "dsh-llm-ustc",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "USTC LLM provider for DeepSeek Harness with a provider-scoped iWAN tunnel",
   "repository": {
     "type": "git",
@@ -125,7 +125,7 @@
     "@earendil-works/pi-ai": "0.87.1",
     "@types/node": "^24.19.0",
     "@types/react": "~18.3.31",
-    "rolldown": "^1.2.11",
+    "rolldown": "^1.2.12",
     "typescript": "^6.0.3",
     "vitest": "^4.1.11"
   },

@@ -616,8 +616,8 @@ fn now() -> Instant {
 }
 
 fn random_seed() -> u64 {
-    use rand::RngCore;
-    rand::thread_rng().next_u64()
+    use rand::Rng;
+    rand::rng().next_u64()
 }
 
 #[cfg(test)]

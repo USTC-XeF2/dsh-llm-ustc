@@ -35,6 +35,14 @@ jobs:
         run: |
           version=$(node -p "require('./package.json').version")
           test "$GITHUB_REF_NAME" = "v$version"
+          node <<'NODE'
+          const { readdirSync } = require('node:fs')
+          const version = require('./package.json').version
+          for (const directory of readdirSync('packages')) {
+            const pkg = require(`./packages/${directory}/package.json`)
+            if (pkg.version !== version) throw new Error(`${pkg.name}: version ${pkg.version} does not match ${version}`)
+          }
+          NODE
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [[ "$version" == *-* ]]; then
             echo "dist_tag=next" >> "$GITHUB_OUTPUT"
