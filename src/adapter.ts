@@ -1,7 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import {
-  assertUsableApiKey,
   LlmAdapter,
   LlmError,
   ReasoningEffortId,
@@ -44,6 +43,7 @@ export class UstcAdapter extends LlmAdapter {
     private readonly ctx: Context,
     private readonly helper: HelperManager,
     private readonly catalog: ModelCatalog,
+    private readonly resolveApiKey: () => Promise<string>,
   ) {
     super()
   }
@@ -112,14 +112,7 @@ export class UstcAdapter extends LlmAdapter {
     const adapter = new PiAiAdapter({
       profiles: () => profiles,
       auth: this.auth,
-      resolveApiKey: async () => {
-        const hit = await this.ctx.credentials.resolve(credentialRef(API_KEY_REF))
-        if (hit === undefined) throw new LlmError(
-          `USTC LLM credential ${API_KEY_REF} is not configured`,
-          'MISSING_CREDENTIAL',
-        )
-        return assertUsableApiKey(hit.value, 'dsh-llm-ustc', API_KEY_REF)
-      },
+      resolveApiKey: this.resolveApiKey,
       resolveAttachments: () => this.ctx.get('attachments'),
     })
     this.delegate = { key, adapter }

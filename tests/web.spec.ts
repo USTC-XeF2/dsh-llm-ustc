@@ -6,6 +6,7 @@ import { publicIwanServers } from '../src/iwan.ts'
 import type { ModelCatalog } from '../src/model-catalog.ts'
 import type { IwanAuthenticator } from '../src/oidc.ts'
 import type { StateStore } from '../src/state.ts'
+import type { TokenworksAuth } from '../src/tokenworks.ts'
 import { publicMessage, UstcWebBackend, type SettingsSnapshot } from '../src/web.ts'
 
 describe('browser-safe settings values', () => {
@@ -31,6 +32,25 @@ describe('browser-safe settings values', () => {
 })
 
 describe('USTC web settings backend', () => {
+  it('switches the key source without clearing either credential or changing the network route', async () => {
+    const update = vi.fn().mockResolvedValue(undefined)
+    const unset = vi.fn()
+    const cancel = vi.fn()
+    const stop = vi.fn()
+    const backend = new UstcWebBackend(
+      { settings: { update }, credentials: { unset } } as unknown as Context,
+      { stop } as unknown as HelperManager, {} as ModelCatalog, {} as StateStore,
+      undefined, SETTINGS_NS, undefined, { cancel } as unknown as TokenworksAuth,
+    )
+    const snapshot = { keySource: 'tokenworks' } as SettingsSnapshot
+    vi.spyOn(backend, 'snapshot').mockResolvedValue(snapshot)
+    await expect(backend.handle({ action: 'selectKeySource', keySource: 'tokenworks', expectedRevision: 3 })).resolves.toBe(snapshot)
+    expect(update).toHaveBeenCalledWith(SETTINGS_NS, { keySource: 'tokenworks' }, 3)
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(unset).not.toHaveBeenCalled()
+    expect(stop).not.toHaveBeenCalled()
+  })
+
   it('stores Host-authenticated iWAN lines and restarts the helper boundary', async () => {
     const config = {
       domain: 'iwan.ustc',

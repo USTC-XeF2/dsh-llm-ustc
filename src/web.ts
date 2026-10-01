@@ -11,12 +11,15 @@ import type { ModelCatalog } from './model-catalog.ts'
 import { IwanAuthenticator } from './oidc.ts'
 import type { StateStore } from './state.ts'
 import type { PublicServer } from './types.ts'
+import { TokenworksAuth } from './tokenworks.ts'
 
 export interface SettingsSnapshot {
   writable: boolean
   revision: number
   selectedServerId?: string
+  keySource: 'manual' | 'tokenworks'
   apiKey: { configured: boolean; source?: string; writable: boolean }
+  tokenworks: { configured: boolean; writable: boolean; pending: boolean; name?: string; error?: string }
   iwan: {
     configured: boolean
     source?: string
@@ -29,6 +32,8 @@ export interface SettingsSnapshot {
 }
 
 type WebRequest =
+  | { action: 'selectKeySource'; keySource: 'manual' | 'tokenworks'; expectedRevision: number }
+  | { action: 'beginTokenworks' | 'cancelTokenworks' | 'logoutTokenworks' }
   | { action: 'saveApiKey'; value: string }
   | { action: 'unsetApiKey' }
   | { action: 'beginOidc' }
@@ -47,23 +52,27 @@ export class UstcWebBackend {
     private readonly iwanAuth: IwanAuthenticator = new IwanAuthenticator(),
     private readonly settingsId = SETTINGS_NS,
     private readonly config?: Config,
+    private readonly tokenworks: TokenworksAuth = new TokenworksAuth(ctx),
   ) {}
 
   async snapshot(): Promise<SettingsSnapshot> {
     const descriptor = this.ctx.settings.describe({ redactSecrets: true }).find(row => row.ns === this.settingsId)
     if (descriptor === undefined) throw new Error('llm-ustc settings namespace is not registered')
-    const value = descriptor.value as { selectedServerId?: string }
-    const [apiKey, iwan, iwanSecret] = await Promise.all([
+    const value = descriptor.value as { selectedServerId?: string; keySource?: 'manual' | 'tokenworks' }
+    const [apiKey, iwan, iwanSecret, tokenworks] = await Promise.all([
       this.ctx.credentials.describe(credentialRef(API_KEY_REF)),
       this.ctx.credentials.describe(credentialRef(IWAN_CONFIG_REF)),
       this.ctx.credentials.resolve(credentialRef(IWAN_CONFIG_REF)),
+      this.tokenworks.snapshot(),
     ])
     const state = this.store.snapshot()
     return {
       writable: this.ctx.settings.writable,
       revision: descriptor.revision,
       ...(value.selectedServerId === undefined ? {} : { selectedServerId: value.selectedServerId }),
+      keySource: value.keySource ?? 'manual',
       apiKey: publicCredential(apiKey),
+      tokenworks: { ...tokenworks, ...(tokenworks.error === undefined ? {} : { error: publicMessage(new Error(tokenworks.error)) }) },
       iwan: {
         ...publicCredential(iwan),
         servers: publicIwanServers(iwanSecret?.value),
@@ -76,6 +85,20 @@ export class UstcWebBackend {
 
   async handle(request: WebRequest): Promise<unknown> {
     switch (request.action) {
+      case 'selectKeySource':
+        await this.ctx.settings.update(this.settingsId, { keySource: request.keySource }, request.expectedRevision)
+        this.tokenworks.cancel()
+        return this.snapshot()
+      case 'beginTokenworks': {
+        const login = await this.tokenworks.begin()
+        return { ...login, snapshot: await this.snapshot() }
+      }
+      case 'cancelTokenworks':
+        this.tokenworks.cancel()
+        return this.snapshot()
+      case 'logoutTokenworks':
+        await this.tokenworks.logout()
+        return this.snapshot()
       case 'saveApiKey': {
         const key = request.value.trim()
         if (key.length === 0) throw new TypeError('API Key may not be empty')
@@ -189,6 +212,9 @@ async function readJson(req: Request): Promise<unknown> {
 function parseWebRequest(value: unknown): WebRequest {
   if (!isRecord(value) || typeof value.action !== 'string') throw new TypeError('request action is required')
   switch (value.action) {
+    case 'selectKeySource':
+      if ((value.keySource !== 'manual' && value.keySource !== 'tokenworks') || !Number.isSafeInteger(value.expectedRevision)) throw new TypeError('keySource and expectedRevision are required')
+      return { action: value.action, keySource: value.keySource, expectedRevision: value.expectedRevision as number }
     case 'saveApiKey':
       if (typeof value.value !== 'string') throw new TypeError('API Key must be a string')
       return { action: value.action, value: value.value }
@@ -201,7 +227,7 @@ function parseWebRequest(value: unknown): WebRequest {
     case 'logoutIwan':
       if (!Number.isSafeInteger(value.expectedRevision)) throw new TypeError('expectedRevision is required')
       return { action: value.action, expectedRevision: value.expectedRevision as number }
-    case 'unsetApiKey': case 'beginOidc': case 'refreshRoute': case 'syncModels':
+    case 'unsetApiKey': case 'beginOidc': case 'refreshRoute': case 'syncModels': case 'beginTokenworks': case 'cancelTokenworks': case 'logoutTokenworks':
       return { action: value.action }
     default:
       throw new TypeError(`unsupported action: ${value.action}`)

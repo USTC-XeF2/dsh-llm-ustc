@@ -1,4 +1,3 @@
-import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it, vi } from 'vitest'
 import { UstcAdapter } from '../src/adapter.ts'
@@ -34,11 +33,8 @@ describe('model catalog', () => {
       onDirectRecovered: (handler: () => Promise<void>) => { recover = handler },
       fetch,
     } as unknown as HelperManager
-    const ctx = {
-      credentials: { resolve: vi.fn().mockResolvedValue({ value: 'host-owned-key' }) },
-    } as unknown as Context
     const store = { setModels, models: () => [] } as unknown as StateStore
-    new ModelCatalog(ctx, helper, store)
+    new ModelCatalog(async () => 'host-owned-key', helper, store)
 
     await recover()
 
@@ -51,10 +47,8 @@ describe('model catalog', () => {
 
 describe('helper authentication', () => {
   it('adds the private helper session header to chat completion requests', async () => {
+    let key = 'test-api-key'
     const adapter = new UstcAdapter({
-      credentials: {
-        resolve: async () => ({ value: 'test-api-key' }),
-      },
       get: () => undefined,
     } as never, {
       endpoint: async () => ({
@@ -64,7 +58,7 @@ describe('helper authentication', () => {
       }),
     } as never, {
       models: () => [{ id: DEFAULT_MODEL, name: DEFAULT_MODEL }],
-    } as never)
+    } as never, async () => key)
 
     const originalFetch = globalThis.fetch
     let headers: Headers | undefined
@@ -91,11 +85,17 @@ describe('helper authentication', () => {
           source: { kind: 'user' },
         })],
       })) {}
+      expect(headers?.get('authorization')).toBe('Bearer test-api-key')
+      key = 'tokenworks-gateway-key'
+      for await (const _chunk of adapter.stream({
+        provider: 'ustc', model: DEFAULT_MODEL,
+        messages: [createUserMessage({ content: [{ type: 'text', text: 'hello again' }], source: { kind: 'user' } })],
+      })) {}
     } finally {
       globalThis.fetch = originalFetch
     }
 
-    expect(headers?.get('authorization')).toBe('Bearer test-api-key')
+    expect(headers?.get('authorization')).toBe('Bearer tokenworks-gateway-key')
     expect(headers?.get('x-dsh-ustc-session')).toBe('private-session')
   })
 })

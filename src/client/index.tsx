@@ -12,6 +12,13 @@ const SETTINGS_ROUTE = '/api/llm-ustc/settings'
 
 const en = {
   apiKeyLabel: 'USTC API Key',
+  keySource: 'Key source',
+  manualKey: 'Enter API Key',
+  tokenworksKey: 'Tokenworks sign-in',
+  beginTokenworks: 'Sign in to Tokenworks',
+  awaitingLogin: 'Waiting for browser sign-in...',
+  cancelLogin: 'Cancel sign-in',
+  signedIn: 'Signed in',
   apiKeyPlaceholder: 'Enter a new key',
   configured: 'Configured',
   readOnly: 'The active credential or settings provider is read-only.',
@@ -49,6 +56,13 @@ type LocaleKey = keyof typeof en
 
 const zh: Record<LocaleKey, string> = {
   apiKeyLabel: '科大 API Key',
+  keySource: 'Key 来源',
+  manualKey: '手动输入 API Key',
+  tokenworksKey: '词元工坊登录',
+  beginTokenworks: '登录词元工坊',
+  awaitingLogin: '等待浏览器登录...',
+  cancelLogin: '取消登录',
+  signedIn: '已登录',
   apiKeyPlaceholder: '输入新的 Key',
   configured: '已配置',
   readOnly: '当前凭据或设置提供方为只读。',
@@ -101,7 +115,9 @@ interface SettingsSnapshot {
   writable: boolean
   revision: number
   selectedServerId?: string
+  keySource: 'manual' | 'tokenworks'
   apiKey: { configured: boolean; source?: string; writable: boolean }
+  tokenworks: { configured: boolean; writable: boolean; pending: boolean; name?: string; error?: string }
   iwan: {
     configured: boolean
     source?: string
@@ -121,12 +137,13 @@ interface OidcBegin {
 interface ApiSuccess<T> { ok: true; value: T }
 interface ApiFailure { ok: false; error: { code: string; message: string } }
 
-type Action = 'load' | 'saveApiKey' | 'unsetApiKey' | 'beginOidc' | 'completeOidc' | 'logoutIwan' | 'refreshRoute' | 'selectServer' | 'syncModels'
+type Action = 'load' | 'saveApiKey' | 'unsetApiKey' | 'selectKeySource' | 'beginTokenworks' | 'cancelTokenworks' | 'logoutTokenworks' | 'beginOidc' | 'completeOidc' | 'logoutIwan' | 'refreshRoute' | 'selectServer' | 'syncModels'
 
 interface ViewState {
   status: 'idle' | 'loading' | 'ready' | 'error'
   snapshot?: SettingsSnapshot | undefined
   oidc?: OidcBegin | undefined
+  tokenworksUrl?: string | undefined
   action?: Action | undefined
   error?: string | undefined
   errorAction?: Action | undefined
@@ -153,6 +170,7 @@ export class UstcSettingsController {
   private current: ViewState = { status: 'idle' }
   private readonly listeners = new Set<() => void>()
   private generation = 0
+  private polling = false
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -172,7 +190,7 @@ export class UstcSettingsController {
     try {
       const snapshot = await apiRequest<SettingsSnapshot>()
       if (generation !== this.generation) return
-      this.set({ status: 'ready', snapshot, oidc: this.current.oidc })
+      this.set({ status: 'ready', snapshot, oidc: this.current.oidc, tokenworksUrl: snapshot.tokenworks.pending ? this.current.tokenworksUrl : undefined })
     } catch (error) {
       if (generation !== this.generation) return
       this.set({ ...this.current, status: 'error', action: undefined, error: messageOf(error), errorAction: 'load' })
@@ -184,6 +202,7 @@ export class UstcSettingsController {
   }
 
   async run<T>(action: Action, request: Record<string, unknown>, apply: (value: T, state: ViewState) => ViewState): Promise<void> {
+    ++this.generation
     this.set({ ...this.current, action, error: undefined, errorAction: undefined })
     try {
       const value = await apiRequest<T>({ action, ...request })
@@ -196,11 +215,31 @@ export class UstcSettingsController {
   mutateSnapshot(action: Action, request: Record<string, unknown> = {}): Promise<void> {
     return this.run<SettingsSnapshot>(action, request, (snapshot, state) => ({
       status: 'ready', snapshot, oidc: state.oidc,
+      tokenworksUrl: snapshot.tokenworks.pending ? state.tokenworksUrl : undefined,
     }))
   }
 
   beginOidc(): Promise<void> {
     return this.run<OidcBegin>('beginOidc', {}, (oidc, state) => ({ ...state, action: undefined, oidc }))
+  }
+
+  beginTokenworks(): Promise<void> {
+    return this.run<{ authUrl: string; snapshot: SettingsSnapshot }>('beginTokenworks', {}, (value, state) => ({
+      ...state, status: 'ready', action: undefined, snapshot: value.snapshot, tokenworksUrl: value.authUrl,
+    }))
+  }
+
+  async pollLogin(): Promise<void> {
+    if (this.current.action !== undefined || this.polling) return
+    this.polling = true
+    const generation = this.generation
+    try {
+      const snapshot = await apiRequest<SettingsSnapshot>()
+      if (generation !== this.generation) return
+      this.set({ ...this.current, snapshot, tokenworksUrl: snapshot.tokenworks.pending ? this.current.tokenworksUrl : undefined })
+    } catch (error) {
+      if (generation === this.generation) this.set({ ...this.current, error: messageOf(error), errorAction: 'beginTokenworks' })
+    } finally { this.polling = false }
   }
 
   completeOidc(callbackUrl: string): Promise<void> {
@@ -231,6 +270,12 @@ function UstcBundleConfig({ controller, t }: BundleConfigProps) {
 
   useEffect(() => { void controller.load() }, [controller])
   useEffect(() => { setSelectedServerId(snapshot?.selectedServerId ?? '') }, [snapshot?.selectedServerId])
+  useEffect(() => { setApiKey('') }, [snapshot?.keySource])
+  useEffect(() => {
+    if (!snapshot?.tokenworks.pending) return
+    const timer = setInterval(() => { void controller.pollLogin() }, 1_500)
+    return () => clearInterval(timer)
+  }, [controller, snapshot?.tokenworks.pending])
 
   if ((state.status === 'idle' || state.status === 'loading') && snapshot === undefined) {
     return <div className="ulu-loading">{t('loading')}</div>
@@ -243,18 +288,32 @@ function UstcBundleConfig({ controller, t }: BundleConfigProps) {
   const selectedExists = snapshot.iwan.servers.some(server => server.id === selectedServerId)
 
   return <div className="ulu-settings">
-    {!snapshot.writable || !snapshot.apiKey.writable || !snapshot.iwan.writable ? <p className="ulu-alert warning">{t('readOnly')}</p> : null}
+    {!snapshot.writable || !(snapshot.keySource === 'manual' ? snapshot.apiKey.writable : snapshot.tokenworks.writable) || !snapshot.iwan.writable ? <p className="ulu-alert warning">{t('readOnly')}</p> : null}
 
     <section className="ulu-section">
       <div className="ulu-section-title"><h3>{t('apiKeyLabel')}</h3></div>
-      <input className="ulu-input" type="password" autoComplete="new-password" aria-label={t('apiKeyLabel')} placeholder={snapshot.apiKey.configured ? t('configured') : t('apiKeyPlaceholder')} value={apiKey} onChange={event => { setApiKey(event.target.value) }} />
-      <div className="ulu-actions">
+      <select className="ulu-line-select" aria-label={t('keySource')} value={snapshot.keySource} disabled={busy || !snapshot.writable} onChange={event => {
+        void controller.mutateSnapshot('selectKeySource', { keySource: event.target.value, expectedRevision: snapshot.revision })
+      }}><option value="manual">{t('manualKey')}</option><option value="tokenworks">{t('tokenworksKey')}</option></select>
+      {snapshot.keySource === 'manual' ? <>
+        <input className="ulu-input" type="password" autoComplete="new-password" aria-label={t('apiKeyLabel')} placeholder={snapshot.apiKey.configured ? t('configured') : t('apiKeyPlaceholder')} value={apiKey} onChange={event => { setApiKey(event.target.value) }} />
+        <div className="ulu-actions">
         <Button size="sm" variant="primary" disabled={busy || !snapshot.apiKey.writable || apiKey.trim().length === 0} onClick={() => {
           void controller.mutateSnapshot('saveApiKey', { value: apiKey }).then(() => { setApiKey('') })
         }}>{state.action === 'saveApiKey' ? t('saving') : t('save')}</Button>
         <Button size="sm" variant="outline" disabled={busy || !snapshot.apiKey.writable || !snapshot.apiKey.configured} onClick={() => { void controller.mutateSnapshot('unsetApiKey') }}>{t('remove')}</Button>
-      </div>
-      {state.errorAction === 'saveApiKey' || state.errorAction === 'unsetApiKey' ? <p className="ulu-alert error">{state.error}</p> : null}
+        </div>
+      </> : <div className="ulu-login-row">
+        {snapshot.tokenworks.pending ? <>
+          {state.tokenworksUrl === undefined ? <span className="ulu-login-state">{t('awaitingLogin')}</span> : <a className="ulu-link" href={state.tokenworksUrl} target="_blank" rel="noopener noreferrer">{t('openLogin')}</a>}
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => { void controller.mutateSnapshot('cancelTokenworks') }}>{t('cancelLogin')}</Button>
+        </> : snapshot.tokenworks.configured ? <>
+          <span className="ulu-login-state">{snapshot.tokenworks.name ?? t('signedIn')}</span>
+          <Button size="sm" variant="outline" disabled={busy || !snapshot.tokenworks.writable} onClick={() => { void controller.mutateSnapshot('logoutTokenworks') }}>{state.action === 'logoutTokenworks' ? t('loggingOut') : t('logoutIwan')}</Button>
+        </> : <Button size="sm" variant="primary" disabled={busy || !snapshot.tokenworks.writable} onClick={() => { void controller.beginTokenworks() }}>{state.action === 'beginTokenworks' ? t('startingOidc') : t('beginTokenworks')}</Button>}
+      </div>}
+      {state.errorAction === 'saveApiKey' || state.errorAction === 'unsetApiKey' || state.errorAction === 'selectKeySource' || state.errorAction === 'beginTokenworks' || state.errorAction === 'cancelTokenworks' || state.errorAction === 'logoutTokenworks' ? <p className="ulu-alert error">{state.error}</p> : null}
+      {snapshot.keySource === 'tokenworks' && snapshot.tokenworks.error ? <p className="ulu-alert error">{snapshot.tokenworks.error}</p> : null}
     </section>
 
     <div className="ulu-status-row">
@@ -295,7 +354,7 @@ function UstcBundleConfig({ controller, t }: BundleConfigProps) {
     <section className="ulu-section">
       <div className="ulu-section-title">
         <div><h3>{t('models')}</h3><p>{t('refreshedAt')}: {snapshot.modelsUpdatedAt === undefined ? t('never') : new Date(snapshot.modelsUpdatedAt).toLocaleString()}</p></div>
-        <Button size="sm" variant="outline" disabled={busy || !snapshot.apiKey.configured} onClick={() => { void controller.mutateSnapshot('syncModels') }}>{state.action === 'syncModels' ? t('syncingModels') : t('syncModels')}</Button>
+        <Button size="sm" variant="outline" disabled={busy || !(snapshot.keySource === 'manual' ? snapshot.apiKey.configured : snapshot.tokenworks.configured)} onClick={() => { void controller.mutateSnapshot('syncModels') }}>{state.action === 'syncModels' ? t('syncingModels') : t('syncModels')}</Button>
       </div>
       <div className="ulu-model-list">{snapshot.models.map(model => <div className="ulu-model-entry" key={model.id}><code>{model.id}</code>{model.name === model.id ? null : <span>{model.name}</span>}</div>)}</div>
       {state.errorAction === 'syncModels' ? <p className="ulu-alert error">{state.error}</p> : null}
@@ -317,6 +376,7 @@ const CSS = `
 .ulu-row{display:grid;min-width:0;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px}.ulu-field{display:grid;min-width:0;gap:6px}.ulu-field>*{min-width:0}
 .ulu-actions,.ulu-login-row{display:flex;min-width:0;align-items:center;gap:8px}.ulu-actions{padding-top:16px}.ulu-actions button:first-child,.ulu-login-row button,.ulu-row>button{min-height:31px;padding:5px 14px;border-radius:var(--dsw-radius-md);font-size:13px;line-height:1.5}
 .ulu-link{display:inline-flex;min-height:31px;align-items:center;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:1.5;text-decoration:none}.ulu-link:hover{color:var(--dsw-alias-label-primary);text-decoration:underline}
+.ulu-login-state{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:1.5}
 .ulu-spin{animation:ulu-spin .7s linear infinite}@keyframes ulu-spin{to{transform:rotate(360deg)}}
 .ulu-alert{margin:0;padding:10px 0;border-top:0.5px solid var(--dsw-alias-border-l2);font-size:12px;line-height:1.5}.ulu-alert.warning{color:var(--dsw-alias-label-tertiary)}.ulu-alert.error{color:var(--dsw-alias-label-error)}
 .ulu-loading{padding:12px 0;color:var(--dsw-alias-label-tertiary);font-size:12px}.ulu-load-error{display:flex;align-items:center;justify-content:space-between;gap:12px}.ulu-load-error .ulu-alert{flex:1;border-top:0}

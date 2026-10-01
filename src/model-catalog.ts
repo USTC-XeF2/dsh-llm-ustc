@@ -1,13 +1,10 @@
-import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import type { Context } from '@deepseek-ai/cordis'
-import { API_KEY_REF } from './constants.ts'
 import type { HelperManager } from './helper.ts'
 import { normalizeModels, StateStore } from './state.ts'
 import type { CachedModel } from './types.ts'
 
 export class ModelCatalog {
   constructor(
-    private readonly ctx: Context,
+    private readonly resolveApiKey: () => Promise<string>,
     private readonly helper: HelperManager,
     private readonly store: StateStore,
   ) {
@@ -19,14 +16,13 @@ export class ModelCatalog {
   }
 
   async refresh(signal?: AbortSignal): Promise<CachedModel[]> {
-    const credential = await this.ctx.credentials.resolve(credentialRef(API_KEY_REF))
-    if (credential === undefined) throw new Error(`${API_KEY_REF} is not configured`)
+    const key = await this.resolveApiKey()
     const timeout = AbortSignal.timeout(20_000)
     const response = await this.helper.fetch('/v1/models', {
       signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
       headers: {
         accept: 'application/json',
-        authorization: `Bearer ${credential.value.trim()}`,
+        authorization: `Bearer ${key}`,
       },
     })
     if (!response.ok) throw await apiError(response)

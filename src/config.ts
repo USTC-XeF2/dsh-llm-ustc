@@ -4,12 +4,14 @@ import { API_KEY_REF } from './constants.ts'
 
 export interface Config {
   apiKeyEnv: Volatile<string>
+  keySource: Volatile<'manual' | 'tokenworks'>
   selectedServerId: Volatile<string | undefined>
   directRecoverySeconds: Volatile<number>
 }
 
 export const Config = z.object({
   apiKeyEnv: z.union([API_KEY_REF]).role('credential-ref').default(API_KEY_REF).volatile(),
+  keySource: z.union(['manual', 'tokenworks']).default('manual').volatile(),
   selectedServerId: z.string().volatile(),
   directRecoverySeconds: z.number().step(1).min(30).max(86_400).default(300).volatile(),
 })

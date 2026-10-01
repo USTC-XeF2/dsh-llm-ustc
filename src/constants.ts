@@ -2,6 +2,7 @@ export const PROVIDER = 'ustc'
 export const PROVIDER_NAME = 'USTC LLM'
 export const SETTINGS_NS = 'llm-ustc'
 export const API_KEY_REF = 'USTC_LLM_API_KEY'
+export const TOKENWORKS_SESSION_REF = 'USTC_LLM_TOKENWORKS_SESSION'
 export const IWAN_CONFIG_REF = 'USTC_LLM_IWAN_CONFIG'
 export const DEFAULT_MODEL = 'deepseek-flash'
 export const DEFAULT_CONTEXT_WINDOW = 262_144
